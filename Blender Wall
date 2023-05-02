@@ -1,0 +1,134 @@
+import bpy
+import random
+
+# Function to create a single brick
+
+def create_brick(size, location, random_size):
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    brick = bpy.context.active_object
+
+    random_scale = (
+        random.uniform(1 - random_size[0], 1 + random_size[0]),
+        random.uniform(1 - random_size[1], 1 + random_size[1]),
+        random.uniform(1 - random_size[2], 1 + random_size[2])
+    )
+
+    brick.scale = [size[i] * random_scale[i] for i in range(3)]
+    brick.location = location
+    return brick
+
+
+# Function to create a row of bricks
+def create_row(brick_size, row_offset, wall_width, z_location, random_size):
+    bricks = []
+    x_offset = 0
+
+    while x_offset < wall_width:
+        brick_location = (x_offset + row_offset, 0, z_location)
+        brick = create_brick(brick_size, brick_location, random_size)
+        bricks.append(brick)
+        x_offset += brick.dimensions[0] + 0.1
+
+    return bricks
+
+
+# Function to create a brick wall
+def create_brick_wall(brick_size, wall_width, wall_height, random_size):
+    wall = []
+
+    z_offset = 0
+    while z_offset < wall_height:
+        row_offset = (brick_size[0] / 2) * (z_offset % 2)
+        row = create_row(brick_size, row_offset, wall_width, z_offset, random_size)
+        wall.extend(row)
+        z_offset += brick_size[2] + 0.1
+
+    return wall
+
+class BrickWallOperator(bpy.types.Operator):
+    bl_idname = "mesh.create_brick_wall"
+    bl_label = "Create Brick Wall"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    random_width: bpy.props.FloatProperty(name="Random Width", default=0.0, min=0.0, max=1.0)
+    random_height: bpy.props.FloatProperty(name="Random Height", default=0.0, min=0.0, max=1.0)
+    random_depth: bpy.props.FloatProperty(name="Random Depth", default=0.0, min=0.0, max=1.0)
+
+    def execute(self, context):
+        # Delete all existing mesh objects
+        bpy.ops.object.select_all(action='DESELECT')
+        bpy.ops.object.select_by_type(type='MESH')
+        bpy.ops.object.delete()
+
+        wm = context.window_manager
+        brick_width = wm.brick_wall_brick_width
+        brick_height = wm.brick_wall_brick_height
+        brick_depth = wm.brick_wall_brick_depth
+        wall_width = wm.brick_wall_wall_width
+        wall_height = wm.brick_wall_wall_height
+
+        brick_size = (brick_width, brick_height, brick_depth)
+        random_size = (self.random_width, self.random_height, self.random_depth)
+        create_brick_wall(brick_size, wall_width, wall_height, random_size)
+
+        return {'FINISHED'}
+
+
+class BrickWallPanel(bpy.types.Panel):
+    bl_label = "Brick Wall Creator"
+    bl_idname = "OBJECT_PT_brick_wall_creator"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Brick Wall"
+
+    def draw(self, context):
+        layout = self.layout
+
+        col = layout.column(align=True)
+        col.label(text="Brick Dimensions:")
+        col.prop(context.window_manager, "brick_wall_brick_width", text="Width")
+        col.prop(context.window_manager, "brick_wall_brick_height", text="Height")
+        col.prop(context.window_manager, "brick_wall_brick_depth", text="Depth")
+        
+        col = layout.column(align=True)
+        col.label(text="Randomize Brick Size:")
+        col.prop(context.window_manager, "brick_wall_random_width", text="Width")
+        col.prop(context.window_manager, "brick_wall_random_height", text="Height")
+        col.prop(context.window_manager, "brick_wall_random_depth", text="Depth")
+
+        col = layout.column(align=True)
+        col.label(text="Wall Dimensions:")
+        col.prop(context.window_manager, "brick_wall_wall_width", text="Width")
+        col.prop(context.window_manager, "brick_wall_wall_height", text="Height")
+
+
+
+        layout.operator("mesh.create_brick_wall", text="Create Brick Wall")
+
+
+def register():
+    bpy.utils.register_class(BrickWallOperator)
+    bpy.utils.register_class(BrickWallPanel)
+    bpy.types.WindowManager.brick_wall_brick_width = bpy.props.FloatProperty(name="Brick Width", default=2)
+    bpy.types.WindowManager.brick_wall_brick_height = bpy.props.FloatProperty(name="Brick Height", default=1)
+    bpy.types.WindowManager.brick_wall_brick_depth = bpy.props.FloatProperty(name="Brick Depth", default=0.5)
+    bpy.types.WindowManager.brick_wall_wall_width = bpy.props.FloatProperty(name="Wall Width", default=20)
+    bpy.types.WindowManager.brick_wall_wall_height = bpy.props.FloatProperty(name="Wall Height", default=10)
+    bpy.types.WindowManager.brick_wall_random_width = bpy.props.FloatProperty(name="Random Width", default=0.0, min=0.0, max=1.0)
+    bpy.types.WindowManager.brick_wall_random_height = bpy.props.FloatProperty(name="Random Height", default=0.0, min=0.0, max=1.0)
+    bpy.types.WindowManager.brick_wall_random_depth = bpy.props.FloatProperty(name="Random Depth", default=0.0, min=0.0, max=1.0)
+
+def unregister():
+    bpy.utils.unregister_class(BrickWallOperator)
+    bpy.utils.unregister_class(BrickWallPanel)
+    del bpy.types.WindowManager.brick_wall_brick_width
+    del bpy.types.WindowManager.brick_wall_brick_height
+    del bpy.types.WindowManager.brick_wall_brick_depth
+    del bpy.types.WindowManager.brick_wall_wall_width
+    del bpy.types.WindowManager.brick_wall_wall_height
+    del bpy.types.WindowManager.brick_wall_random_width
+    del bpy.types.WindowManager.brick_wall_random_height
+    del bpy.types.WindowManager.brick_wall_random_depth
+
+if __name__ == "__main__":
+    register()
