@@ -3,8 +3,8 @@ name: Build APK
 on:
   push:
     branches:
-      - claude/minimal-android-camera-gq7l13
       - main
+      - 'claude/**'
   workflow_dispatch:
 
 jobs:

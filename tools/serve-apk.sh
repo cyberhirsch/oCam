@@ -8,7 +8,7 @@
 #   PORT=9000 ./tools/serve-apk.sh
 set -euo pipefail
 
-REPO="${REPO:-cyberhirsch/Test}"
+REPO="${REPO:-cyberhirsch/oCam}"
 TAG="${TAG:-debug-latest}"
 PORT="${PORT:-8000}"
 APK="${APK:-}"
