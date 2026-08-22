@@ -51,6 +51,25 @@ aperture and focus distance from the capture results, not just what was requeste
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
+CI builds the same APK on every push and attaches it to a rolling `debug-latest`
+prerelease, so the newest build is always at
+`releases/download/debug-latest/app-debug.apk`.
+
+### Installing on a phone
+
+This repository is private, so that release link asks for a GitHub login on the
+phone. To skip that on your own network, run this on any machine the phone can
+reach:
+
+```
+./tools/serve-apk.sh
+```
+
+It uses a local build if there is one, otherwise downloads the release with `gh`,
+prints a QR code pointing at that machine's LAN address, and serves the file
+until you stop it. No login, no zip to unpack - the phone downloads the APK
+directly and installs it.
+
 ## How it fits together
 
 ```
