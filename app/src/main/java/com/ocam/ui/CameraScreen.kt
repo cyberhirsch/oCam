@@ -8,6 +8,7 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.view.TextureView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -15,17 +16,23 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -39,15 +46,35 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocam.CameraUiState
 import com.ocam.CameraViewModel
-import androidx.compose.foundation.gestures.detectDragGestures
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private const val DAYLIGHT_KELVIN = 5500
 private const val TUNGSTEN_KELVIN = 3000
 
+/** How often the preview is read back for the histogram and the clipping warning. */
+private const val SAMPLE_INTERVAL_MS = 200L
+
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    var textureView by remember { mutableStateOf<TextureView?>(null) }
+    var frame by remember { mutableStateOf(FrameStats.EMPTY) }
+
+    // Nothing this app draws ever touches the preview pixels, so the only way to know what the
+    // frame contains is to read a small copy of it back a few times a second.
+    LaunchedEffect(state.selectedLensId) {
+        while (true) {
+            delay(SAMPLE_INTERVAL_MS)
+            val view = textureView?.takeIf { it.isAvailable } ?: continue
+            val bitmap = runCatching { view.getBitmap(120, 160) }.getOrNull() ?: continue
+            frame = withContext(Dispatchers.Default) { analyseFrame(bitmap) }
+            bitmap.recycle()
+        }
+    }
 
     Column(
         modifier = modifier
@@ -57,7 +84,26 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
     ) {
         TopStrip(state, viewModel)
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            CameraPreview(state, viewModel)
+            CameraPreview(
+                state = state,
+                viewModel = viewModel,
+                frame = frame,
+                onTextureView = { textureView = it },
+            )
+
+            // White balance down the left edge, focus down the right: the frame keeps the width
+            // it had, and neither control sits in the way of the exposure rows below.
+            WhiteBalanceColumn(
+                state = state,
+                viewModel = viewModel,
+                modifier = Modifier.align(Alignment.CenterStart).padding(start = 6.dp),
+            )
+            FocusColumn(
+                state = state,
+                viewModel = viewModel,
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 6.dp),
+            )
+
             val error = state.error
             val status = state.status
             if (error != null || status != null) {
@@ -69,7 +115,7 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
                 }
             }
         }
-        Controls(state, viewModel)
+        Controls(state, viewModel, frame)
     }
 
     if (state.settingsOpen) {
@@ -86,7 +132,12 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun CameraPreview(state: CameraUiState, viewModel: CameraViewModel) {
+private fun CameraPreview(
+    state: CameraUiState,
+    viewModel: CameraViewModel,
+    frame: FrameStats,
+    onTextureView: (TextureView?) -> Unit,
+) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         val aspect = state.previewAspect.coerceIn(0.2f, 5f)
         val width: Dp
@@ -99,55 +150,63 @@ private fun CameraPreview(state: CameraUiState, viewModel: CameraViewModel) {
             width = maxHeight * aspect
         }
 
-        AndroidView(
-            modifier = Modifier
-                .size(width, height)
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = { offset ->
-                            viewModel.tapPreview(
-                                offset.x / size.width.toFloat(),
-                                offset.y / size.height.toFloat(),
-                            )
-                        },
-                        onDoubleTap = { viewModel.resetFocusPoint() },
-                    )
-                }
-                .pointerInput(state.whiteBalanceAdjust) {
-                    if (!state.whiteBalanceAdjust) return@pointerInput
-                    detectDragGestures { change, drag ->
-                        change.consume()
-                        viewModel.dragWhiteBalance(
-                            drag.x / size.width.toFloat(),
-                            drag.y / size.height.toFloat(),
+        Box(modifier = Modifier.size(width, height)) {
+            AndroidView(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { offset ->
+                                viewModel.tapPreview(
+                                    offset.x / size.width.toFloat(),
+                                    offset.y / size.height.toFloat(),
+                                )
+                            },
+                            onDoubleTap = { viewModel.resetFocusPoint() },
                         )
                     }
-                },
-            factory = { context ->
-                TextureView(context).apply {
-                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                        override fun onSurfaceTextureAvailable(
-                            texture: SurfaceTexture,
-                            width: Int,
-                            height: Int,
-                        ) = viewModel.onSurfaceAvailable(texture)
-
-                        override fun onSurfaceTextureSizeChanged(
-                            texture: SurfaceTexture,
-                            width: Int,
-                            height: Int,
-                        ) = Unit
-
-                        override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
-                            viewModel.onSurfaceDestroyed()
-                            return true
+                    .pointerInput(state.whiteBalanceAdjust) {
+                        if (!state.whiteBalanceAdjust) return@pointerInput
+                        detectDragGestures { change, drag ->
+                            change.consume()
+                            viewModel.dragWhiteBalance(
+                                drag.x / size.width.toFloat(),
+                                drag.y / size.height.toFloat(),
+                            )
                         }
+                    },
+                factory = { context ->
+                    TextureView(context).apply {
+                        onTextureView(this)
+                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(
+                                texture: SurfaceTexture,
+                                width: Int,
+                                height: Int,
+                            ) = viewModel.onSurfaceAvailable(texture)
 
-                        override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+                            override fun onSurfaceTextureSizeChanged(
+                                texture: SurfaceTexture,
+                                width: Int,
+                                height: Int,
+                            ) = Unit
+
+                            override fun onSurfaceTextureDestroyed(
+                                texture: SurfaceTexture,
+                            ): Boolean {
+                                viewModel.onSurfaceDestroyed()
+                                return true
+                            }
+
+                            override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+                        }
                     }
-                }
-            },
-        )
+                },
+            )
+            if (state.zebra) {
+                ZebraOverlay(stats = frame, modifier = Modifier.fillMaxSize())
+            }
+        }
     }
 }
 
@@ -191,12 +250,98 @@ private fun TopStrip(state: CameraUiState, viewModel: CameraViewModel) {
     }
 }
 
-/**
- * Every parameter is on screen at once: a slider you can grab straight away, with the button that
- * hands it back to the camera directly underneath it.
- */
+/** Focus lives on the right edge of the frame, running from infinity down to as close as it goes. */
 @Composable
-private fun Controls(state: CameraUiState, viewModel: CameraViewModel) {
+private fun FocusColumn(
+    state: CameraUiState,
+    viewModel: CameraViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val caps = state.capabilities
+    Column(
+        modifier = modifier
+            .background(Color(0x40000000), RoundedCornerShape(4.dp))
+            .padding(vertical = 6.dp, horizontal = 3.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(text = focusText(state), color = Color(0xCCFFFFFF), fontSize = 10.sp)
+        if (state.settings.manualFocus && caps.supportsManualFocus) {
+            VerticalThinSlider(
+                progress = focusProgress(state),
+                manual = true,
+                enabled = true,
+                onProgress = { progress ->
+                    viewModel.setFocusDiopters(progress * caps.minFocusDistance)
+                },
+                modifier = Modifier.height(150.dp),
+            )
+        }
+        FlatButton(
+            label = "AF",
+            active = !state.settings.manualFocus,
+            enabled = caps.supportsManualFocus,
+            onClick = {
+                if (state.settings.manualFocus) viewModel.focusAuto()
+                else viewModel.setManualFocus(true)
+            },
+        )
+    }
+}
+
+/** White balance lives on the left edge: three lights, and the frame itself for anything between. */
+@Composable
+private fun WhiteBalanceColumn(
+    state: CameraUiState,
+    viewModel: CameraViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val settings = state.settings
+    val available = state.capabilities.supportsManualWhiteBalance
+    Column(
+        modifier = modifier
+            .background(Color(0x40000000), RoundedCornerShape(4.dp))
+            .padding(vertical = 6.dp, horizontal = 3.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(text = whiteBalanceText(state), color = Color(0xCCFFFFFF), fontSize = 10.sp)
+        FlatButton(
+            label = "AWB",
+            active = !settings.manualWhiteBalance,
+            onClick = viewModel::whiteBalanceAuto,
+        )
+        FlatButton(
+            label = "DAY",
+            active = settings.manualWhiteBalance && settings.kelvin == DAYLIGHT_KELVIN,
+            enabled = available,
+            onClick = { viewModel.setWhiteBalancePreset(DAYLIGHT_KELVIN) },
+        )
+        FlatButton(
+            label = "TUN",
+            active = settings.manualWhiteBalance && settings.kelvin == TUNGSTEN_KELVIN,
+            enabled = available,
+            onClick = { viewModel.setWhiteBalancePreset(TUNGSTEN_KELVIN) },
+        )
+        FlatButton(
+            label = "ADJ",
+            active = state.whiteBalanceAdjust,
+            enabled = available,
+            onClick = viewModel::toggleWhiteBalanceAdjust,
+        )
+    }
+}
+
+private fun whiteBalanceText(state: CameraUiState): String {
+    val settings = state.settings
+    if (!settings.manualWhiteBalance) return "auto"
+    return formatKelvin(settings.kelvin) +
+        if (abs(settings.tint) > 0.02f) " ${"%+.1f".format(settings.tint)}" else ""
+}
+
+/** Exposure stays under the frame; focus and white balance are along its sides. */
+@Composable
+private fun Controls(state: CameraUiState, viewModel: CameraViewModel, frame: FrameStats) {
     val settings = state.settings
     val caps = state.capabilities
 
@@ -241,159 +386,97 @@ private fun Controls(state: CameraUiState, viewModel: CameraViewModel) {
             onButton = viewModel::exposureAuto,
         )
 
-        ControlRow(
-            label = "FOCUS",
-            value = focusText(state),
-            progress = focusProgress(state),
-            manual = settings.manualFocus,
-            available = caps.supportsManualFocus,
-            showSlider = settings.manualFocus,
-            onProgress = { progress -> viewModel.setFocusDiopters(progress * caps.minFocusDistance) },
-            onButton = viewModel::focusAuto,
-        )
-
-        WhiteBalanceRow(state, viewModel)
-
-        // Compensation only exists while the camera is metering, and it has no manual/auto of its
-        // own - the button resets it to zero.
+        // Compensation biases a meter that is not running while exposure is manual, so it only
+        // exists while the camera is metering.
         val evRange = caps.exposureCompensationRange
         val evSpan = (evRange.upper - evRange.lower).coerceAtLeast(1)
-        if (!settings.manualExposure && evSpan > 1) ControlRow(
-            label = "EV",
-            value = if (settings.manualExposure) "--"
-            else formatExposureCompensation(
-                settings.exposureCompensation,
-                caps.exposureCompensationStep,
-            ),
-            progress = ((settings.exposureCompensation - evRange.lower).toFloat() / evSpan)
-                .coerceIn(0f, 1f),
-            manual = settings.exposureCompensation != 0 && !settings.manualExposure,
-            available = !settings.manualExposure && evSpan > 1,
-            onProgress = { progress ->
-                viewModel.setExposureCompensation(
-                    (evRange.lower + (progress * evSpan).roundToInt())
-                        .coerceIn(evRange.lower, evRange.upper)
-                )
-            },
-            buttonLabel = "0",
-            buttonActive = settings.exposureCompensation == 0,
-            onButton = { viewModel.setExposureCompensation(0) },
-        )
+        if (!settings.manualExposure && evSpan > 1) {
+            ControlRow(
+                label = "EV",
+                value = formatExposureCompensation(
+                    settings.exposureCompensation,
+                    caps.exposureCompensationStep,
+                ),
+                progress = ((settings.exposureCompensation - evRange.lower).toFloat() / evSpan)
+                    .coerceIn(0f, 1f),
+                manual = settings.exposureCompensation != 0,
+                available = true,
+                onProgress = { progress ->
+                    viewModel.setExposureCompensation(
+                        (evRange.lower + (progress * evSpan).roundToInt())
+                            .coerceIn(evRange.lower, evRange.upper)
+                    )
+                },
+                buttonLabel = "0",
+                buttonActive = settings.exposureCompensation == 0,
+                onButton = { viewModel.setExposureCompensation(0) },
+            )
+        }
 
         LensRow(state, viewModel)
-        ShutterRow(state, viewModel)
+        ShutterRow(state, viewModel, frame)
     }
-}
-
-/**
- * White balance has three lights and a gesture instead of a slider: presets cover almost every
- * frame, and when they do not, dragging on the image itself is faster than aiming at a track.
- */
-@Composable
-private fun WhiteBalanceRow(state: CameraUiState, viewModel: CameraViewModel) {
-    val settings = state.settings
-    val available = state.capabilities.supportsManualWhiteBalance
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        RowLabel("WB")
-        FlatButton(
-            label = "AUTO",
-            active = !settings.manualWhiteBalance,
-            onClick = viewModel::whiteBalanceAuto,
-        )
-        FlatButton(
-            label = "DAY",
-            active = settings.manualWhiteBalance && settings.kelvin == DAYLIGHT_KELVIN,
-            enabled = available,
-            onClick = { viewModel.setWhiteBalancePreset(DAYLIGHT_KELVIN) },
-        )
-        FlatButton(
-            label = "TUNG",
-            active = settings.manualWhiteBalance && settings.kelvin == TUNGSTEN_KELVIN,
-            enabled = available,
-            onClick = { viewModel.setWhiteBalancePreset(TUNGSTEN_KELVIN) },
-        )
-        FlatButton(
-            label = "ADJ",
-            active = state.whiteBalanceAdjust,
-            enabled = available,
-            onClick = viewModel::toggleWhiteBalanceAdjust,
-        )
-        Spacer(modifier = Modifier.weight(1f))
-        RowValue(whiteBalanceText(state), highlighted = settings.manualWhiteBalance)
-    }
-}
-
-private fun whiteBalanceText(state: CameraUiState): String {
-    val settings = state.settings
-    if (!settings.manualWhiteBalance) return "auto"
-    val tint = settings.tint
-    return formatKelvin(settings.kelvin) +
-        if (kotlin.math.abs(tint) > 0.02f) " ${"%+.1f".format(tint)}" else ""
 }
 
 @Composable
 private fun LensRow(state: CameraUiState, viewModel: CameraViewModel) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(top = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        state.lenses.forEach { lens ->
-            // "!" marks a lens that looks like a helper sensor or has misbehaved here before.
-            // It still opens, but only on a second tap.
-            val risky = lens.warning != null || lens.id in state.troubled
-            Pill(
-                // Several cameras on one side can share a focal length, so the id is what
-                // actually tells them apart.
-                text = lens.zoomLabel,
-                subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
-                selected = lens.id == state.selectedLensId,
-                onClick = { viewModel.selectLens(lens.id) },
-            )
-        }
-    }
-}
-
-@Composable
-private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel) {
-    val context = LocalContext.current
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+        Row(
+            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            state.lenses.forEach { lens ->
+                // "!" marks a lens that looks like a helper sensor or has misbehaved here before.
+                // It still opens, but only on a second tap.
+                val risky = lens.warning != null || lens.id in state.troubled
+                Pill(
+                    text = lens.zoomLabel,
+                    subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
+                    selected = lens.id == state.selectedLensId,
+                    onClick = { viewModel.selectLens(lens.id) },
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             FlatButton(
                 label = state.settings.format.label,
                 active = state.settings.format.writesRaw,
                 onClick = viewModel::cycleFormat,
             )
+            FlatButton(label = "SET", active = state.settingsOpen, onClick = viewModel::openSettings)
+        }
+    }
+}
+
+@Composable
+private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel, frame: FrameStats) {
+    val context = LocalContext.current
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            FlatButton(
+                label = "ZEBRA",
+                active = state.zebra,
+                onClick = viewModel::toggleZebra,
+            )
+            FlatButton(label = "FILES", active = false, onClick = { openPhotoFolder(context) })
         }
         ShutterButton(
             busy = state.busy,
             enabled = state.selectedLensId != null,
             onClick = viewModel::capture,
         )
-        Row(
-            modifier = Modifier.weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FlatButton(
-                label = "FILES",
-                active = false,
-                onClick = { openPhotoFolder(context) },
-            )
-            FlatButton(
-                label = "SET",
-                active = state.settingsOpen,
-                onClick = viewModel::openSettings,
-            )
+        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+            Histogram(stats = frame)
         }
     }
 }

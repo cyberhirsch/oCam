@@ -57,6 +57,8 @@ data class CameraUiState(
     val saveHeic: Boolean = false,
     val saveRaw: Boolean = true,
     val settingsOpen: Boolean = false,
+    /** Stripes over what is about to clip. */
+    val zebra: Boolean = false,
 ) {
     /** What the shutter can be set to here: what is allowed, filtered by what this lens can do. */
     val formatChoices: List<CaptureFormat>
@@ -195,6 +197,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         val next = choices[(choices.indexOf(_state.value.settings.format) + 1) % choices.size]
         updateSettings { it.copy(format = next) }
     }
+
+    fun toggleZebra() = _state.update { it.copy(zebra = !it.zebra) }
 
     fun openSettings() = _state.update { it.copy(settingsOpen = true) }
 

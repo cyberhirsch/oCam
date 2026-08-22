@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -88,6 +89,62 @@ fun ThinSlider(
                 // Hollow thumb: the camera is choosing this value, not you.
                 drawCircle(Color.Black, radius, Offset(x, centerY))
                 drawCircle(ink, radius, Offset(x, centerY), style = Stroke(1.5.dp.toPx()))
+            }
+        }
+    }
+}
+
+/**
+ * The same slider stood on end, for the controls that live along the edge of the frame rather
+ * than under it. Top is infinity, bottom is as close as the lens focuses.
+ */
+@Composable
+fun VerticalThinSlider(
+    progress: Float,
+    manual: Boolean,
+    enabled: Boolean,
+    onProgress: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val clamped = progress.coerceIn(0f, 1f)
+    Box(
+        modifier = modifier
+            .width(26.dp)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures { offset ->
+                    onProgress((offset.y / size.height.toFloat()).coerceIn(0f, 1f))
+                }
+            }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectVerticalDragGestures { change, _ ->
+                    change.consume()
+                    onProgress((change.position.y / size.height.toFloat()).coerceIn(0f, 1f))
+                }
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val centerX = size.width / 2f
+            val track = 2.dp.toPx()
+            val y = clamped * size.height
+            val radius = if (manual) 7.dp.toPx() else 5.dp.toPx()
+
+            val rail = Color.White.copy(alpha = if (enabled) 0.20f else 0.08f)
+            val ink = when {
+                !enabled -> Color.White.copy(alpha = 0.15f)
+                manual -> Color.White
+                else -> Color.White.copy(alpha = 0.45f)
+            }
+
+            drawLine(rail, Offset(centerX, 0f), Offset(centerX, size.height), track, StrokeCap.Round)
+            drawLine(ink, Offset(centerX, 0f), Offset(centerX, y), track, StrokeCap.Round)
+
+            if (manual) {
+                drawCircle(ink, radius, Offset(centerX, y))
+            } else {
+                drawCircle(Color.Black, radius, Offset(centerX, y))
+                drawCircle(ink, radius, Offset(centerX, y), style = Stroke(1.5.dp.toPx()))
             }
         }
     }
