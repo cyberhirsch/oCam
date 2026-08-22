@@ -27,7 +27,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -84,11 +87,13 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
         }
     }
 
+    // The window is edge to edge and the preview is not inset: padding the whole screen for the
+    // status and navigation bars took that strip out of the picture, which on its side is a black
+    // band above and below the frame. Only the controls and the readout keep clear of the bars.
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
-            .systemBarsPadding()
     ) {
         // Upright the controls sit under the frame; on its side they sit beside it. Same parts,
         // same order, so nothing has to be learned twice.
@@ -96,23 +101,36 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
         if (landscape) {
             // On its side the frame is limited by height, so a strip of readout above it costs
             // picture. The readout goes onto the image instead and the frame takes the full height.
+            // What a full-height frame needs is fixed by its own proportions; the controls get
+            // what is left. A panel of fixed width instead pushes the frame down to whatever
+            // fits beside it, which is where the black bands above and below came from.
+            val aspect = (state.previewWidth.toFloat() / state.previewHeight).coerceIn(0.2f, 5f)
+            val panel = (maxWidth - maxHeight * aspect).coerceIn(200.dp, 320.dp)
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     PreviewArea(state, viewModel, frame, landscape, overlayInfo = true) {
                         textureView = it
                     }
                 }
-                LandscapeControls(state, viewModel, frame)
+                Box(modifier = Modifier.width(panel).fillMaxHeight().safeDrawingPadding()) {
+                    LandscapeControls(state, viewModel, frame)
+                }
             }
         } else {
             // Upright the frame is limited by width, so the strip above it costs nothing and
             // stays where it is legible: on black rather than over the picture.
             Column(modifier = Modifier.fillMaxSize()) {
-                TopStrip(state, viewModel)
+                TopStrip(
+                    state = state,
+                    viewModel = viewModel,
+                    modifier = Modifier.statusBarsPadding().displayCutoutPadding(),
+                )
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     PreviewArea(state, viewModel, frame, landscape) { textureView = it }
                 }
-                Controls(state, viewModel, frame)
+                Box(modifier = Modifier.navigationBarsPadding()) {
+                    Controls(state, viewModel, frame)
+                }
             }
         }
     }
@@ -144,20 +162,25 @@ private fun LandscapeControls(
     val settings = state.settings
     val caps = state.capabilities
 
-    BoxWithConstraints(modifier = Modifier.fillMaxHeight()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         // Everything except the sliders themselves has a fixed height - the button on top, the
         // gaps, the name and value at the foot, the lenses and the row of buttons. A fixed slider
         // length on top of that is taller than a short screen, and what falls off the bottom is
         // the row with SET in it. The sliders take what is left instead.
         val sliderHeight = (maxHeight - 180.dp).coerceIn(56.dp, 170.dp)
 
+        // The shutter keeps its strip; the parameters take the rest, and when that is little
+        // enough that three buttons will not sit on one line, they take two.
+        val strip = 96.dp
+        val narrow = maxWidth - strip < 160.dp
+
         Row(modifier = Modifier.fillMaxHeight()) {
             Column(
-                modifier = Modifier.width(210.dp).fillMaxHeight().padding(horizontal = 10.dp),
+                modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 6.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(if (narrow) 6.dp else 14.dp)) {
                     VerticalControl(
                         label = "ISO",
                         value = isoText(state),
@@ -218,12 +241,31 @@ private fun LandscapeControls(
                         active = state.settings.format.writesRaw,
                         onClick = viewModel::cycleFormat,
                     )
-                    FlatButton(label = "SET", active = state.settingsOpen, onClick = viewModel::openSettings)
-                    FlatButton(label = "FILES", active = false, onClick = { openPhotoFolder(context) })
+                    FlatButton(
+                        label = "SET",
+                        active = state.settingsOpen,
+                        onClick = viewModel::openSettings,
+                    )
+                    if (!narrow) {
+                        FlatButton(
+                            label = "FILES",
+                            active = false,
+                            onClick = { openPhotoFolder(context) },
+                        )
+                    }
+                }
+                if (narrow) {
+                    Row(modifier = Modifier.padding(top = 6.dp)) {
+                        FlatButton(
+                            label = "FILES",
+                            active = false,
+                            onClick = { openPhotoFolder(context) },
+                        )
+                    }
                 }
             }
 
-            Box(modifier = Modifier.width(110.dp).fillMaxHeight()) {
+            Box(modifier = Modifier.width(strip).fillMaxHeight()) {
                 FlatButton(
                     label = "ZEBRA",
                     active = state.zebra,
@@ -238,7 +280,10 @@ private fun LandscapeControls(
                 )
                 Histogram(
                     stats = frame,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 20.dp)
+                        .fillMaxWidth(),
                 )
             }
         }
@@ -263,7 +308,10 @@ private fun PreviewArea(
                 state = state,
                 viewModel = viewModel,
                 overlay = true,
-                modifier = Modifier.align(Alignment.TopCenter),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .displayCutoutPadding(),
             )
         }
 
@@ -639,7 +687,7 @@ private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel, frame: 
             onClick = viewModel::capture,
         )
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            Histogram(stats = frame)
+            Histogram(stats = frame, modifier = Modifier.width(96.dp))
         }
     }
 }

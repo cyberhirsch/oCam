@@ -20,7 +20,6 @@ import androidx.compose.ui.unit.dp
 fun Histogram(stats: FrameStats, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
-            .width(96.dp)
             .height(38.dp)
             .background(Color(0x40000000), RoundedCornerShape(3.dp))
             .padding(horizontal = 3.dp, vertical = 3.dp),
