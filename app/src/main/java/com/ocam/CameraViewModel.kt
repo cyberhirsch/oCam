@@ -22,6 +22,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
+
+const val MIN_KELVIN = 2000
+const val MAX_KELVIN = 10000
+private const val KELVIN_SPAN = 6000f
 
 data class CameraUiState(
     val lenses: List<Lens> = emptyList(),
@@ -43,6 +48,8 @@ data class CameraUiState(
     val diagnostics: String? = null,
     /** Lenses that failed or took the camera down on this device. */
     val troubled: Set<String> = emptySet(),
+    /** While true, dragging on the frame sets white balance instead of focusing. */
+    val whiteBalanceAdjust: Boolean = false,
 ) {
     val selectedLens: Lens? get() = lenses.firstOrNull { it.id == selectedLensId }
 
@@ -255,14 +262,62 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     fun setKelvin(kelvin: Int) =
         updateSettings { it.copy(manualWhiteBalance = true, kelvin = kelvin) }
 
-    fun whiteBalanceAuto() = updateSettings { it.copy(manualWhiteBalance = false) }
+    fun whiteBalanceAuto() {
+        _state.update { it.copy(whiteBalanceAdjust = false) }
+        updateSettings { it.copy(manualWhiteBalance = false, tint = 0f) }
+    }
+
+    /** One of the three fixed lights. Picking one leaves any fine tuning in place. */
+    fun setWhiteBalancePreset(kelvin: Int) {
+        _state.update { it.copy(whiteBalanceAdjust = false) }
+        updateSettings { it.copy(manualWhiteBalance = true, kelvin = kelvin) }
+    }
+
+    /**
+     * Hand white balance to the frame itself: while this is on, dragging across the preview sets
+     * temperature sideways and tint up and down, which is quicker than any slider and lets you
+     * watch the image instead of a number.
+     */
+    fun toggleWhiteBalanceAdjust() {
+        val turningOn = !_state.value.whiteBalanceAdjust
+        _state.update { it.copy(whiteBalanceAdjust = turningOn) }
+        if (turningOn) {
+            updateSettings { it.copy(manualWhiteBalance = true) }
+            onStatus("Drag the frame: sideways for warmth, up and down for tint")
+        }
+    }
+
+    /** Drag deltas as a fraction of the preview size. */
+    fun dragWhiteBalance(horizontal: Float, vertical: Float) {
+        updateSettings { current ->
+            current.copy(
+                manualWhiteBalance = true,
+                kelvin = (current.kelvin + horizontal * KELVIN_SPAN).roundToInt()
+                    .coerceIn(MIN_KELVIN, MAX_KELVIN),
+                tint = (current.tint + vertical * 2f).coerceIn(-1f, 1f),
+            )
+        }
+    }
+
+    /**
+     * A tap on the frame means "focus here" either way: autofocus gets a metering point, manual
+     * focus borrows autofocus once and keeps the distance it lands on.
+     */
+    fun tapPreview(normalizedX: Float, normalizedY: Float) {
+        if (_state.value.whiteBalanceAdjust) return
+        if (_state.value.settings.manualFocus) {
+            controller.rackFocusAt(normalizedX, normalizedY)
+        } else {
+            controller.focusAt(normalizedX, normalizedY)
+        }
+    }
+
+    override fun onFocusRacked(diopters: Float) {
+        updateSettings { it.copy(manualFocus = true, focusDiopters = diopters) }
+        onStatus("Focus set to ${"%.2f".format(diopters)} dpt")
+    }
 
     fun capture() = controller.capture()
-
-    fun focusAt(normalizedX: Float, normalizedY: Float) {
-        if (_state.value.settings.manualFocus) return
-        controller.focusAt(normalizedX, normalizedY)
-    }
 
     /** Forget the tap-to-focus point and go back to continuous autofocus. */
     fun resetFocusPoint() = controller.clearMetering()

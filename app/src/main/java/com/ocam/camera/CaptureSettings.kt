@@ -26,6 +26,8 @@ data class CaptureSettings(
     val focusDiopters: Float = 0f,
     val manualWhiteBalance: Boolean = false,
     val kelvin: Int = 5200,
+    /** Green (negative) to magenta (positive) shift, -1..1. */
+    val tint: Float = 0f,
     val aperture: Float? = null,
     val format: CaptureFormat = CaptureFormat.JPEG,
     /** Physical device rotation in degrees, from the orientation sensor. */
@@ -49,7 +51,7 @@ val IDENTITY_COLOR_TRANSFORM: ColorSpaceTransform = ColorSpaceTransform(
  * Tanner Helland's blackbody approximation; the gains are its reciprocal, normalised so the
  * smallest gain is 1.0 (gains below 1 would just throw away signal).
  */
-fun kelvinToGains(kelvin: Int): RggbChannelVector {
+fun kelvinToGains(kelvin: Int, tint: Float = 0f): RggbChannelVector {
     val t = kelvin.coerceIn(1500, 15000) / 100.0
 
     val red = if (t <= 66) 255.0 else 329.698727446 * (t - 60).pow(-0.1332047592)
@@ -69,7 +71,9 @@ fun kelvinToGains(kelvin: Int): RggbChannelVector {
     val b = blue.coerceIn(1.0, 255.0)
 
     val gainR = 255.0 / r
-    val gainG = 255.0 / g
+    // Tint trades green against magenta, which on a Bayer sensor is simply how much of the
+    // green channel is let through relative to the other two.
+    val gainG = 255.0 / g * (1.0 - tint.coerceIn(-1f, 1f) * 0.4)
     val gainB = 255.0 / b
     val smallest = minOf(gainR, gainG, gainB)
 

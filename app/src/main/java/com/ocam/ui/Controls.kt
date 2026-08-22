@@ -2,7 +2,6 @@ package com.ocam.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -32,6 +31,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -51,7 +51,6 @@ fun ThinSlider(
     val clamped = progress.coerceIn(0f, 1f)
     Box(
         modifier = modifier
-            .fillMaxWidth()
             .height(26.dp)
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
@@ -94,41 +93,42 @@ fun ThinSlider(
     }
 }
 
-/** Small filled/outlined pill. Filled means "this is the state you are in". */
+/** Small flat rectangle. Filled means "this is the state you are in". */
 @Composable
-fun AutoButton(
+fun FlatButton(
     label: String,
     active: Boolean,
-    enabled: Boolean,
+    enabled: Boolean = true,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val background = when {
-        !enabled -> Color(0x11FFFFFF)
+        !enabled -> Color(0x0DFFFFFF)
         active -> Color.White
-        else -> Color(0x26FFFFFF)
+        else -> Color(0x1FFFFFFF)
     }
     val foreground = when {
-        !enabled -> Color(0x44FFFFFF)
+        !enabled -> Color(0x40FFFFFF)
         active -> Color.Black
-        else -> Color.White
+        else -> Color(0xCCFFFFFF)
     }
     Text(
         text = label,
         color = foreground,
-        fontSize = 11.sp,
+        fontSize = 9.sp,
         fontWeight = FontWeight.SemiBold,
         modifier = modifier
-            .clip(RoundedCornerShape(50))
+            .clip(RoundedCornerShape(2.dp))
             .background(background)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 7.dp),
+            .padding(horizontal = 8.dp, vertical = 5.dp),
     )
 }
 
 /**
- * One camera parameter: the slider sits directly above its button, so the choice is always
- * "press the button" or "move the slider" - never a menu.
+ * One camera parameter on one line: name, the button that hands it back to the camera, the
+ * slider, and the value it currently has. The choice is only ever "press the button" or "move
+ * the slider" - never a menu.
  */
 @Composable
 fun ControlRow(
@@ -140,42 +140,58 @@ fun ControlRow(
     onProgress: (Float) -> Unit,
     buttonLabel: String = "AUTO",
     buttonActive: Boolean = !manual,
+    showSlider: Boolean = true,
     onButton: () -> Unit,
 ) {
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .semantics { contentDescription = "$label $value" }
+            .semantics { contentDescription = "$label $value" },
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        ThinSlider(
-            progress = progress,
-            manual = manual,
+        RowLabel(label)
+        FlatButton(
+            label = buttonLabel,
+            active = buttonActive,
             enabled = available,
-            onProgress = onProgress,
+            onClick = onButton,
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            AutoButton(
-                label = buttonLabel,
-                active = buttonActive,
+        if (showSlider) {
+            ThinSlider(
+                progress = progress,
+                manual = manual,
                 enabled = available,
-                onClick = onButton,
+                onProgress = onProgress,
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
             )
-            Spacer(modifier = Modifier.width(10.dp))
-            Text(
-                text = label,
-                color = Color(0x80FFFFFF),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium,
-            )
+        } else {
             Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = value,
-                color = if (manual && available) Color.White else Color(0xB3FFFFFF),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-            )
         }
+        RowValue(value, highlighted = manual && available)
     }
+}
+
+@Composable
+fun RowLabel(label: String) {
+    Text(
+        text = label,
+        color = Color(0x73FFFFFF),
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Medium,
+        modifier = Modifier.width(38.dp),
+    )
+}
+
+@Composable
+fun RowValue(value: String, highlighted: Boolean) {
+    Text(
+        text = value,
+        color = if (highlighted) Color.White else Color(0xA6FFFFFF),
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Medium,
+        textAlign = TextAlign.End,
+        modifier = Modifier.width(62.dp),
+    )
 }
 
 /** Small rounded button used for lenses and the capture format. */
@@ -218,27 +234,35 @@ fun Pill(
     }
 }
 
+/** A ring, not a disc: the frame stays visible through the middle of the control. */
 @Composable
 fun ShutterButton(busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    Box(contentAlignment = Alignment.Center) {
-        Box(
-            modifier = Modifier
-                .size(72.dp)
-                .border(3.dp, Color.White.copy(alpha = if (enabled) 1f else 0.4f), CircleShape)
-                .padding(6.dp)
-                .clip(CircleShape)
-                .background(
-                    if (busy) Color(0x66FFFFFF)
-                    else Color.White.copy(alpha = if (enabled) 1f else 0.4f)
-                )
-                .clickable(enabled = enabled && !busy, onClick = onClick)
-                .semantics { contentDescription = "Shutter" },
-        )
+    Box(
+        modifier = Modifier
+            .size(64.dp)
+            .clip(CircleShape)
+            .clickable(enabled = enabled && !busy, onClick = onClick)
+            .semantics { contentDescription = "Shutter" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val stroke = 3.5.dp.toPx()
+            val colour = when {
+                !enabled -> Color.White.copy(alpha = 0.3f)
+                busy -> Color.White.copy(alpha = 0.45f)
+                else -> Color.White
+            }
+            drawCircle(
+                color = colour,
+                radius = (size.minDimension - stroke) / 2f,
+                style = Stroke(stroke),
+            )
+        }
         if (busy) {
             CircularProgressIndicator(
-                modifier = Modifier.size(34.dp),
-                color = Color.Black,
-                strokeWidth = 3.dp,
+                modifier = Modifier.size(26.dp),
+                color = Color.White,
+                strokeWidth = 2.dp,
             )
         }
     }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -33,10 +34,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocam.CameraUiState
 import com.ocam.CameraViewModel
 import com.ocam.camera.CaptureFormat
+import androidx.compose.foundation.gestures.detectDragGestures
 import kotlin.math.roundToInt
 
-private const val MIN_KELVIN = 2000
-private const val MAX_KELVIN = 10000
+private const val DAYLIGHT_KELVIN = 5500
+private const val TUNGSTEN_KELVIN = 3000
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
@@ -94,13 +96,23 @@ private fun CameraPreview(state: CameraUiState, viewModel: CameraViewModel) {
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { offset ->
-                            viewModel.focusAt(
+                            viewModel.tapPreview(
                                 offset.x / size.width.toFloat(),
                                 offset.y / size.height.toFloat(),
                             )
                         },
                         onDoubleTap = { viewModel.resetFocusPoint() },
                     )
+                }
+                .pointerInput(state.whiteBalanceAdjust) {
+                    if (!state.whiteBalanceAdjust) return@pointerInput
+                    detectDragGestures { change, drag ->
+                        change.consume()
+                        viewModel.dragWhiteBalance(
+                            drag.x / size.width.toFloat(),
+                            drag.y / size.height.toFloat(),
+                        )
+                    }
                 },
             factory = { context ->
                 TextureView(context).apply {
@@ -161,7 +173,7 @@ private fun TopStrip(state: CameraUiState, viewModel: CameraViewModel) {
                 )
             }
         }
-        AutoButton(
+        FlatButton(
             label = "ALL AUTO",
             active = !state.settings.anyManual,
             enabled = state.settings.anyManual,
@@ -226,23 +238,12 @@ private fun Controls(state: CameraUiState, viewModel: CameraViewModel) {
             progress = focusProgress(state),
             manual = settings.manualFocus,
             available = caps.supportsManualFocus,
+            showSlider = settings.manualFocus,
             onProgress = { progress -> viewModel.setFocusDiopters(progress * caps.minFocusDistance) },
             onButton = viewModel::focusAuto,
         )
 
-        ControlRow(
-            label = "WB",
-            value = if (settings.manualWhiteBalance) formatKelvin(settings.kelvin) else "auto",
-            progress = ((settings.kelvin - MIN_KELVIN).toFloat() / (MAX_KELVIN - MIN_KELVIN))
-                .coerceIn(0f, 1f),
-            manual = settings.manualWhiteBalance,
-            available = caps.supportsManualWhiteBalance,
-            onProgress = { progress ->
-                val kelvin = MIN_KELVIN + (progress * (MAX_KELVIN - MIN_KELVIN)).roundToInt()
-                viewModel.setKelvin((kelvin / 50) * 50)
-            },
-            onButton = viewModel::whiteBalanceAuto,
-        )
+        WhiteBalanceRow(state, viewModel)
 
         // Compensation only exists while the camera is metering, and it has no manual/auto of its
         // own - the button resets it to zero.
@@ -273,6 +274,56 @@ private fun Controls(state: CameraUiState, viewModel: CameraViewModel) {
         LensRow(state, viewModel)
         ShutterRow(state, viewModel)
     }
+}
+
+/**
+ * White balance has three lights and a gesture instead of a slider: presets cover almost every
+ * frame, and when they do not, dragging on the image itself is faster than aiming at a track.
+ */
+@Composable
+private fun WhiteBalanceRow(state: CameraUiState, viewModel: CameraViewModel) {
+    val settings = state.settings
+    val available = state.capabilities.supportsManualWhiteBalance
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        RowLabel("WB")
+        FlatButton(
+            label = "AUTO",
+            active = !settings.manualWhiteBalance,
+            onClick = viewModel::whiteBalanceAuto,
+        )
+        FlatButton(
+            label = "DAY",
+            active = settings.manualWhiteBalance && settings.kelvin == DAYLIGHT_KELVIN,
+            enabled = available,
+            onClick = { viewModel.setWhiteBalancePreset(DAYLIGHT_KELVIN) },
+        )
+        FlatButton(
+            label = "TUNG",
+            active = settings.manualWhiteBalance && settings.kelvin == TUNGSTEN_KELVIN,
+            enabled = available,
+            onClick = { viewModel.setWhiteBalancePreset(TUNGSTEN_KELVIN) },
+        )
+        FlatButton(
+            label = "ADJ",
+            active = state.whiteBalanceAdjust,
+            enabled = available,
+            onClick = viewModel::toggleWhiteBalanceAdjust,
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        RowValue(whiteBalanceText(state), highlighted = settings.manualWhiteBalance)
+    }
+}
+
+private fun whiteBalanceText(state: CameraUiState): String {
+    val settings = state.settings
+    if (!settings.manualWhiteBalance) return "auto"
+    val tint = settings.tint
+    return formatKelvin(settings.kelvin) +
+        if (kotlin.math.abs(tint) > 0.02f) " ${"%+.1f".format(tint)}" else ""
 }
 
 @Composable

@@ -44,6 +44,9 @@ private const val MAX_OPEN_ATTEMPTS = 4
 private const val OPEN_RETRY_DELAY_MS = 300L
 private val OPEN_RETRY_TOKEN = Any()
 
+/** How long to let autofocus hunt when racking focus by tap. */
+private const val RACK_TIMEOUT_MS = 2_500L
+
 /**
  * Owns the Camera2 device, session and capture pipeline. Every camera call happens on a single
  * background thread; image encoding happens on a second one. Nothing here knows about Compose.
@@ -58,6 +61,8 @@ class CameraController(context: Context, private val listener: Listener) {
             streams: String,
         )
         fun onLiveValues(iso: Int?, exposureTimeNs: Long?, focusDiopters: Float?, aperture: Float?)
+        /** Autofocus found a subject while in manual focus; this is the distance it settled on. */
+        fun onFocusRacked(diopters: Float)
         fun onCaptureBusy(busy: Boolean)
         fun onStatus(message: String)
         fun onError(message: String)
@@ -98,6 +103,7 @@ class CameraController(context: Context, private val listener: Listener) {
     private var maxAfRegions = 0
     private var maxAeRegions = 0
     private var shadingMapAvailable = false
+    private var rackingFocus = false
     private var meteringRegion: MeteringRectangle? = null
     private var state = State.PREVIEW
     private var lastPublishMs = 0L
@@ -149,6 +155,37 @@ class CameraController(context: Context, private val listener: Listener) {
     /** Point AF/AE at a spot in the preview, given in 0..1 view coordinates. */
     fun focusAt(normalizedX: Float, normalizedY: Float) {
         cameraHandler.post { setMeteringPoint(normalizedX, normalizedY) }
+    }
+
+    /**
+     * Pull focus to a spot while focus is manual: borrow autofocus for one shot, then keep the
+     * distance it found. Manual focus cannot search by itself, but it can be told where to land.
+     */
+    fun rackFocusAt(normalizedX: Float, normalizedY: Float) {
+        cameraHandler.post {
+            if (!capabilities.hasAutoFocus) {
+                listener.onStatus("This lens cannot search for focus")
+                return@post
+            }
+            setMeteringPoint(normalizedX, normalizedY)
+            rackingFocus = true
+            applyToPreview()
+
+            val builder = previewBuilder ?: return@post
+            val active = session ?: return@post
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+            runCatching { active.capture(builder.build(), previewCallback, cameraHandler) }
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
+            cameraHandler.postDelayed(rackTimeout, RACK_TIMEOUT_MS)
+        }
+    }
+
+    private val rackTimeout = Runnable {
+        if (rackingFocus) {
+            rackingFocus = false
+            applyToPreview()
+            listener.onStatus("Focus did not find anything there")
+        }
     }
 
     /** Drop the tap-to-focus point and go back to continuous autofocus. */
@@ -434,7 +471,12 @@ class CameraController(context: Context, private val listener: Listener) {
             }
         }
 
-        if (current.manualFocus && caps.supportsManualFocus) {
+        if (rackingFocus && caps.hasAutoFocus) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
+            meteringRegion?.takeIf { maxAfRegions > 0 }?.let {
+                builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(it))
+            }
+        } else if (current.manualFocus && caps.supportsManualFocus) {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
             builder.set(
                 CaptureRequest.LENS_FOCUS_DISTANCE,
@@ -457,7 +499,10 @@ class CameraController(context: Context, private val listener: Listener) {
                 CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX,
             )
             builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, IDENTITY_COLOR_TRANSFORM)
-            builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToGains(current.kelvin))
+            builder.set(
+                CaptureRequest.COLOR_CORRECTION_GAINS,
+                kelvinToGains(current.kelvin, current.tint),
+            )
         } else {
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
         }
@@ -493,6 +538,18 @@ class CameraController(context: Context, private val listener: Listener) {
 
     private fun advance(result: CaptureResult) {
         publishLiveValues(result)
+
+        if (rackingFocus) {
+            val af = result.get(CaptureResult.CONTROL_AF_STATE)
+            if (af == CameraMetadata.CONTROL_AF_STATE_FOCUSED_LOCKED ||
+                af == CameraMetadata.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED
+            ) {
+                rackingFocus = false
+                cameraHandler.removeCallbacks(rackTimeout)
+                val distance = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+                if (distance != null) listener.onFocusRacked(distance) else applyToPreview()
+            }
+        }
         when (state) {
             State.PREVIEW, State.CAPTURING -> Unit
 
