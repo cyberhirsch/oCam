@@ -555,6 +555,9 @@ class CameraController(context: Context, private val listener: Listener) {
     }
 
     private val previewCallback = object : CameraCaptureSession.CaptureCallback() {
+        // Partial results carry only whatever the camera has decided so far; every other key
+        // reads back null. They are fine for watching the focus and exposure state machines,
+        // but publishing values from them makes the readout blink on and off.
         override fun onCaptureProgressed(
             session: CameraCaptureSession,
             request: CaptureRequest,
@@ -565,11 +568,13 @@ class CameraController(context: Context, private val listener: Listener) {
             session: CameraCaptureSession,
             request: CaptureRequest,
             result: TotalCaptureResult,
-        ) = advance(result)
+        ) {
+            publishLiveValues(result)
+            advance(result)
+        }
     }
 
     private fun advance(result: CaptureResult) {
-        publishLiveValues(result)
 
         if (rackingFocus) {
             val af = result.get(CaptureResult.CONTROL_AF_STATE)

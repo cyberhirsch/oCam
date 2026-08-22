@@ -35,8 +35,9 @@ data class CameraUiState(
     val selectedLensId: String? = null,
     val capabilities: LensCapabilities = LensCapabilities.EMPTY,
     val settings: CaptureSettings = CaptureSettings(),
-    /** Preview width / height as shown on screen. */
-    val previewAspect: Float = 3f / 4f,
+    /** The preview buffer, in the sensor's own landscape numbers. */
+    val previewWidth: Int = 1440,
+    val previewHeight: Int = 1080,
     val liveIso: Int? = null,
     val liveExposureNs: Long? = null,
     val liveFocusDiopters: Float? = null,
@@ -467,8 +468,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 capabilities = capabilities,
                 settings = settings,
                 streamSummary = streams,
-                // The preview arrives rotated for the display, so the portrait aspect is inverted.
-                previewAspect = previewSize.height.toFloat() / previewSize.width.toFloat(),
+                previewWidth = previewSize.width,
+                previewHeight = previewSize.height,
                 liveIso = null,
                 liveExposureNs = null,
                 liveFocusDiopters = null,
@@ -485,12 +486,14 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         focusDiopters: Float?,
         aperture: Float?,
     ) {
+        // A key the camera omits for one frame must not blank the readout: keep the last value
+        // it actually reported.
         _state.update {
             it.copy(
-                liveIso = iso,
-                liveExposureNs = exposureTimeNs,
-                liveFocusDiopters = focusDiopters,
-                liveAperture = aperture,
+                liveIso = iso ?: it.liveIso,
+                liveExposureNs = exposureTimeNs ?: it.liveExposureNs,
+                liveFocusDiopters = focusDiopters ?: it.liveFocusDiopters,
+                liveAperture = aperture ?: it.liveAperture,
             )
         }
     }

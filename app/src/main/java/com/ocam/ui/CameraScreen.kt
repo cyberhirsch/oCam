@@ -2,10 +2,13 @@ package com.ocam.ui
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Matrix
+import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -19,11 +22,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -38,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -50,6 +57,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 private const val DAYLIGHT_KELVIN = 5500
@@ -76,46 +84,41 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
         }
     }
 
-    Column(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
             .systemBarsPadding()
     ) {
-        TopStrip(state, viewModel)
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            CameraPreview(
-                state = state,
-                viewModel = viewModel,
-                frame = frame,
-                onTextureView = { textureView = it },
-            )
-
-            // White balance down the left edge, focus down the right: the frame keeps the width
-            // it had, and neither control sits in the way of the exposure rows below.
-            WhiteBalanceColumn(
-                state = state,
-                viewModel = viewModel,
-                modifier = Modifier.align(Alignment.CenterStart).padding(start = 6.dp),
-            )
-            FocusColumn(
-                state = state,
-                viewModel = viewModel,
-                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 6.dp),
-            )
-
-            val error = state.error
-            val status = state.status
-            if (error != null || status != null) {
-                Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp)) {
-                    Banner(
-                        text = error ?: status.orEmpty(),
-                        color = if (error != null) MaterialTheme.colorScheme.error else Color.White,
-                    )
+        // Upright the controls sit under the frame; on its side they sit beside it. Same parts,
+        // same order, so nothing has to be learned twice.
+        val landscape = maxWidth > maxHeight
+        if (landscape) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                TopStrip(state, viewModel)
+                Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                        PreviewArea(state, viewModel, frame, landscape) { textureView = it }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .width(320.dp)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        Controls(state, viewModel, frame)
+                    }
                 }
             }
+        } else {
+            Column(modifier = Modifier.fillMaxSize()) {
+                TopStrip(state, viewModel)
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    PreviewArea(state, viewModel, frame, landscape) { textureView = it }
+                }
+                Controls(state, viewModel, frame)
+            }
         }
-        Controls(state, viewModel, frame)
     }
 
     if (state.settingsOpen) {
@@ -131,15 +134,56 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
     }
 }
 
+/** The frame plus everything that lives along its edges. */
+@Composable
+private fun PreviewArea(
+    state: CameraUiState,
+    viewModel: CameraViewModel,
+    frame: FrameStats,
+    landscape: Boolean,
+    onTextureView: (TextureView?) -> Unit,
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        CameraPreview(state, viewModel, frame, landscape, onTextureView)
+
+        WhiteBalanceColumn(
+            state = state,
+            viewModel = viewModel,
+            modifier = Modifier.align(Alignment.CenterStart).padding(start = 6.dp),
+        )
+        FocusColumn(
+            state = state,
+            viewModel = viewModel,
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 6.dp),
+        )
+
+        val error = state.error
+        val status = state.status
+        if (error != null || status != null) {
+            Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp)) {
+                Banner(
+                    text = error ?: status.orEmpty(),
+                    color = if (error != null) MaterialTheme.colorScheme.error else Color.White,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun CameraPreview(
     state: CameraUiState,
     viewModel: CameraViewModel,
     frame: FrameStats,
+    landscape: Boolean,
     onTextureView: (TextureView?) -> Unit,
 ) {
+    val context = LocalContext.current
     BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        val aspect = state.previewAspect.coerceIn(0.2f, 5f)
+        // Fit, never fill: the box takes the frame's own proportions, so the whole picture is
+        // on screen and the black bars fall outside it.
+        val buffer = state.previewWidth.toFloat() / state.previewHeight.toFloat()
+        val aspect = (if (landscape) buffer else 1f / buffer).coerceIn(0.2f, 5f)
         val width: Dp
         val height: Dp
         if (maxWidth / aspect <= maxHeight) {
@@ -175,6 +219,16 @@ private fun CameraPreview(
                             )
                         }
                     },
+                update = { view ->
+                    view.post {
+                        applyPreviewTransform(
+                            view = view,
+                            bufferWidth = state.previewWidth,
+                            bufferHeight = state.previewHeight,
+                            rotation = ContextCompat.getDisplayOrDefault(context).rotation,
+                        )
+                    }
+                },
                 factory = { context ->
                     TextureView(context).apply {
                         onTextureView(this)
@@ -479,6 +533,44 @@ private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel, frame: 
             Histogram(stats = frame)
         }
     }
+}
+
+/**
+ * The camera hands over each frame already turned for the device's natural orientation, so only
+ * the difference from that needs correcting - and the correction scales to fit rather than fill,
+ * because a cropped preview lies about what the picture will contain.
+ */
+private fun applyPreviewTransform(
+    view: TextureView,
+    bufferWidth: Int,
+    bufferHeight: Int,
+    rotation: Int,
+) {
+    val viewWidth = view.width.toFloat()
+    val viewHeight = view.height.toFloat()
+    if (viewWidth <= 0f || viewHeight <= 0f || bufferWidth <= 0 || bufferHeight <= 0) return
+
+    val matrix = Matrix()
+    val centerX = viewWidth / 2f
+    val centerY = viewHeight / 2f
+
+    when (rotation) {
+        Surface.ROTATION_90, Surface.ROTATION_270 -> {
+            // Undo the default stretch first: put the frame back at its own size, centred.
+            val content = RectF(0f, 0f, bufferHeight.toFloat(), bufferWidth.toFloat())
+            content.offset(centerX - content.centerX(), centerY - content.centerY())
+            matrix.setRectToRect(
+                RectF(0f, 0f, viewWidth, viewHeight),
+                content,
+                Matrix.ScaleToFit.FILL,
+            )
+            matrix.postRotate(90f * (rotation - 2), centerX, centerY)
+            val scale = min(viewWidth / bufferWidth, viewHeight / bufferHeight)
+            matrix.postScale(scale, scale, centerX, centerY)
+        }
+        Surface.ROTATION_180 -> matrix.postRotate(180f, centerX, centerY)
+    }
+    view.setTransform(matrix)
 }
 
 /**
