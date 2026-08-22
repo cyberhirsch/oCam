@@ -4,6 +4,12 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Every CI run stamps its own number, so two builds are never the same version and Android will
+// treat a newer one as an upgrade. A local build has no number and stays at 1.
+val baseVersion = "1.0"
+val buildNumber = (System.getenv("BUILD_NUMBER") ?: "0").toIntOrNull() ?: 0
+val buildCommit = System.getenv("BUILD_COMMIT")?.take(7)
+
 android {
     namespace = "com.ocam"
     compileSdk = 35
@@ -13,8 +19,12 @@ android {
         // MediaStore RELATIVE_PATH and direct opening of physical cameras both need API 29.
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = maxOf(buildNumber, 1)
+        versionName = buildString {
+            append(baseVersion).append('.').append(buildNumber)
+            // The commit is what turns a bug report into something reproducible.
+            if (buildCommit != null) append('+').append(buildCommit)
+        }
     }
 
     buildTypes {

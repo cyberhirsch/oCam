@@ -12,6 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # Gradle stamps these into versionCode and versionName.
+      BUILD_NUMBER: ${{ github.run_number }}
+      BUILD_COMMIT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,23 +34,61 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
 
+      - name: Name the APK
+        id: apk
+        run: |
+          version="1.0.${BUILD_NUMBER}"
+          short_sha="${BUILD_COMMIT:0:7}"
+          versioned="oCam-${version}-debug.apk"
+          built=app/build/outputs/apk/debug/app-debug.apk
+
+          test -f "$built"
+          cp "$built" "$versioned"
+          # A second copy under a name that never changes, so the download link
+          # and the QR code pointing at it keep working across builds.
+          cp "$built" oCam-debug.apk
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "versioned=$versioned" >> "$GITHUB_OUTPUT"
+          echo "Built $versioned ($(du -h "$versioned" | cut -f1))"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: minimal-camera-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: oCam-${{ steps.apk.outputs.version }}-debug
+          path: ${{ steps.apk.outputs.versioned }}
           if-no-files-found: error
 
       # A release asset is a direct .apk a phone can install by tapping it; the
-      # artifact above is a zip. Rolling tag - each build replaces the file.
+      # artifact above is a zip. Rolling tag - each build replaces the files.
       - name: Publish APK to the rolling debug release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.apk.outputs.version }}
+          SHORT_SHA: ${{ steps.apk.outputs.short_sha }}
+          VERSIONED: ${{ steps.apk.outputs.versioned }}
         run: |
+          notes="oCam $VERSION, built from $SHORT_SHA on $(date -u '+%Y-%m-%d %H:%M UTC').
+
+          oCam-debug.apk always points at the newest build; the versioned file
+          next to it is this build specifically."
+
           gh release view debug-latest >/dev/null 2>&1 || \
             gh release create debug-latest \
               --target "$GITHUB_SHA" \
               --prerelease \
               --title "Debug build" \
-              --notes "Rolling debug APK, replaced by every CI build on this branch."
-          gh release upload debug-latest \
-            app/build/outputs/apk/debug/app-debug.apk --clobber
+              --notes "$notes"
+
+          gh release edit debug-latest --title "oCam $VERSION" --notes "$notes"
+
+          # Drop the previous build's versioned file, otherwise the rolling
+          # release slowly fills up with 24 MB copies.
+          gh release view debug-latest --json assets -q '.assets[].name' \
+            | grep -E '^oCam-1\.0\.[0-9]+-debug\.apk$' \
+            | grep -vx "$VERSIONED" \
+            | while read -r stale; do
+                gh release delete-asset debug-latest "$stale" --yes || true
+              done
+
+          gh release upload debug-latest "$VERSIONED" oCam-debug.apk --clobber
