@@ -10,11 +10,25 @@ import android.util.Size
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
+/** How a camera turned up, which is also roughly how likely it is to open cleanly. */
+enum class LensOrigin {
+    /** Advertised by getCameraIdList - the ones every app sees. */
+    LISTED,
+
+    /** A physical sub-camera of a logical multi-camera. */
+    PHYSICAL,
+
+    /** Not advertised anywhere; found by asking for the id directly. */
+    HIDDEN,
+}
+
+/** How far to probe for ids the system does not advertise. */
+private const val PROBE_LIMIT = 100
+
 /**
- * A camera the app can actually open: either an id from [CameraManager.getCameraIdList], or a
- * physical sub-camera of a logical multi-camera. Physical ids are not in the public id list, but
- * since API 29 they can be opened directly as long as they are backward compatible - that is what
- * makes the ultra-wide/tele lenses individually selectable instead of hidden behind zoom ratios.
+ * A camera the app can actually open. Phones expose their extra sensors in three different ways
+ * and plenty use only the last one, so all three are searched: the public id list, the physical
+ * sub-cameras of a logical multi-camera, and ids that answer only when asked for by name.
  */
 data class Lens(
     val id: String,
@@ -24,7 +38,7 @@ data class Lens(
     val equivalent35mm: Int,
     /** Focal length relative to the default lens on the same side, e.g. 0.5x, 1x, 3x. */
     val zoom: Float,
-    val isPhysical: Boolean,
+    val origin: LensOrigin,
     val supportsRaw: Boolean,
     val supportsManualSensor: Boolean,
 ) {
@@ -45,7 +59,11 @@ data class Lens(
         get() = buildString {
             if (equivalent35mm > 0) append("${equivalent35mm}mm") else append("%.1fmm".format(focalLengthMm))
             append(" · id ").append(id)
-            if (isPhysical) append("*")
+            when (origin) {
+                LensOrigin.PHYSICAL -> append(" · sub")
+                LensOrigin.HIDDEN -> append(" · hidden")
+                LensOrigin.LISTED -> Unit
+            }
         }
 }
 
@@ -125,28 +143,34 @@ fun CameraCharacteristics.jpegSize(): Size? =
  * because they cannot serve a preview.
  */
 fun enumerateLenses(manager: CameraManager): List<Lens> {
-    val found = LinkedHashMap<String, Pair<CameraCharacteristics, Boolean>>()
+    val found = LinkedHashMap<String, Pair<CameraCharacteristics, LensOrigin>>()
 
-    val topLevelIds = runCatching { manager.cameraIdList }.getOrDefault(emptyArray())
-    for (id in topLevelIds) {
-        val characteristics = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
-        if (!characteristics.isUsable()) continue
-        found[id] = characteristics to false
+    fun consider(id: String, origin: LensOrigin) {
+        if (found.containsKey(id)) return
+        val characteristics =
+            runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return
+        if (!characteristics.isUsable()) return
+        found[id] = characteristics to origin
     }
+
+    // 1. What the system advertises - usually just one camera per side.
+    val topLevelIds = runCatching { manager.cameraIdList }.getOrDefault(emptyArray())
+    topLevelIds.forEach { consider(it, LensOrigin.LISTED) }
+
+    // 2. Physical sub-cameras, on the devices that declare a logical multi-camera.
     for (id in topLevelIds) {
         val logical = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
-        val physicalIds = runCatching { logical.physicalCameraIds }.getOrDefault(emptySet())
-        for (physicalId in physicalIds) {
-            if (found.containsKey(physicalId)) continue
-            val characteristics =
-                runCatching { manager.getCameraCharacteristics(physicalId) }.getOrNull() ?: continue
-            if (!characteristics.isUsable()) continue
-            found[physicalId] = characteristics to true
-        }
+        runCatching { logical.physicalCameraIds }.getOrDefault(emptySet())
+            .forEach { consider(it, LensOrigin.PHYSICAL) }
     }
 
+    // 3. The ones the system hides. Plenty of phones keep their extra sensors out of
+    //    getCameraIdList() and out of any logical camera: the id answers only if asked for
+    //    directly. Probing is the only way to find them.
+    for (id in 0 until PROBE_LIMIT) consider(id.toString(), LensOrigin.HIDDEN)
+
     val raw = found.map { (id, entry) ->
-        val (characteristics, isPhysical) = entry
+        val (characteristics, origin) = entry
         val focal = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
             ?.minOrNull() ?: 0f
         Lens(
@@ -156,7 +180,7 @@ fun enumerateLenses(manager: CameraManager): List<Lens> {
             focalLengthMm = focal,
             equivalent35mm = characteristics.equivalent35mm(focal),
             zoom = 1f,
-            isPhysical = isPhysical,
+            origin = origin,
             supportsRaw = characteristics.hasCapability(
                 CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW
             ) && characteristics.rawSize() != null,

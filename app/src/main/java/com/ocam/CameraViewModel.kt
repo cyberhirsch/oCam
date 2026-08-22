@@ -294,6 +294,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     override fun onError(message: String) = showError(message)
 
     private fun showError(message: String) {
+        // A camera the system hides can refuse to open. Forget what we thought was open so
+        // picking the same lens again actually retries instead of doing nothing.
+        openedLensId = null
         _state.update { it.copy(error = message, busy = false) }
         statusJob?.cancel()
         statusJob = viewModelScope.launch {

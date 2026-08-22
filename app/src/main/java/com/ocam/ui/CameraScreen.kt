@@ -138,7 +138,8 @@ private fun TopStrip(state: CameraUiState, viewModel: CameraViewModel) {
             )
             if (lens != null) {
                 Text(
-                    text = "${lens.facingLabel} ${lens.zoomLabel} · ${lens.detailLabel}",
+                    text = "${lens.facingLabel} ${lens.zoomLabel} · ${lens.detailLabel}" +
+                        if (lens.supportsRaw) " · raw" else "",
                     color = Color(0x99FFFFFF),
                     fontSize = 10.sp,
                 )
@@ -269,8 +270,10 @@ private fun LensRow(state: CameraUiState, viewModel: CameraViewModel) {
     ) {
         state.lenses.forEach { lens ->
             Pill(
+                // Several cameras on one side can share a focal length, so the id is what
+                // actually tells them apart.
                 text = lens.zoomLabel,
-                subtitle = "${lens.facingLabel}${if (lens.supportsRaw) " · raw" else ""}",
+                subtitle = "${lens.facingLabel} ${lens.id}",
                 selected = lens.id == state.selectedLensId,
                 onClick = { viewModel.selectLens(lens.id) },
             )
