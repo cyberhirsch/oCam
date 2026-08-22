@@ -41,11 +41,10 @@ Each is labelled with its zoom factor relative to the default lens on that side,
 | ISO / SEC | AE | sensitivity and shutter over the sensor's full reported range |
 | FOCUS | continuous AF, tap the preview for a spot, double tap to release it | distance from infinity to the lens minimum |
 | WB | AWB | colour temperature, 2000K to 10000K |
-| EV | - | bias while the camera meters; its button resets to zero |
 
 ISO and SEC share one button on purpose: the hardware auto-exposure is all or nothing, so
-taking over either one necessarily turns off the other. EV only exists while AE is on, and
-the app greys it out rather than pretending otherwise.
+taking over either one necessarily turns off the other. There is no exposure compensation:
+it only ever biases a meter, and the sliders that replace it say what the camera is doing.
 
 **RAW.** The format button cycles JPEG → RAW → RAW+JPEG on lenses that support it. RAW is
 written as DNG built from the exact capture result that produced the frame, so the black
@@ -53,8 +52,10 @@ level, colour matrices, noise profile and lens shading in the file match the sho
 land in `Pictures/oCam` through MediaStore, so no storage permission is needed and they
 show up in the gallery immediately.
 
-**A live readout** across the top shows what the camera actually did - the ISO, shutter,
-aperture and focus distance from the capture results, not just what was requested.
+**A live readout** shows what the camera actually did - the ISO, shutter, aperture and
+focus distance from the capture results, not just what was requested. Upright it sits above
+the frame; on its side it moves onto the image, because there the frame is limited by height
+and a strip above it would cost picture.
 
 ### Sensors that are not cameras
 

@@ -494,10 +494,6 @@ class CameraController(context: Context, private val listener: Listener) {
             }
         } else {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-            builder.set(
-                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
-                caps.exposureCompensationRange.clamp(current.exposureCompensation),
-            )
             meteringRegion?.takeIf { maxAeRegions > 0 }?.let {
                 builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(it))
             }

@@ -94,16 +94,19 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
         // same order, so nothing has to be learned twice.
         val landscape = maxWidth > maxHeight
         if (landscape) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                TopStrip(state, viewModel)
-                Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                        PreviewArea(state, viewModel, frame, landscape) { textureView = it }
+            // On its side the frame is limited by height, so a strip of readout above it costs
+            // picture. The readout goes onto the image instead and the frame takes the full height.
+            Row(modifier = Modifier.fillMaxSize()) {
+                Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    PreviewArea(state, viewModel, frame, landscape, overlayInfo = true) {
+                        textureView = it
                     }
-                    LandscapeControls(state, viewModel, frame)
                 }
+                LandscapeControls(state, viewModel, frame)
             }
         } else {
+            // Upright the frame is limited by width, so the strip above it costs nothing and
+            // stays where it is legible: on black rather than over the picture.
             Column(modifier = Modifier.fillMaxSize()) {
                 TopStrip(state, viewModel)
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -140,122 +143,104 @@ private fun LandscapeControls(
     val context = LocalContext.current
     val settings = state.settings
     val caps = state.capabilities
-    val sliderHeight = 150.dp
 
-    Row(modifier = Modifier.fillMaxHeight()) {
-        Column(
-            modifier = Modifier.width(210.dp).fillMaxHeight().padding(horizontal = 10.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                VerticalControl(
-                    label = "ISO",
-                    value = isoText(state),
-                    progress = isoProgress(state),
-                    manual = settings.manualExposure,
-                    available = caps.supportsManualIso,
-                    sliderHeight = sliderHeight,
-                    onProgress = { progress ->
-                        caps.isoRange?.let { range ->
-                            viewModel.setIso(
-                                fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
-                                    .roundToInt().coerceIn(range.lower, range.upper)
-                            )
-                        }
-                    },
-                    onButton = viewModel::exposureAuto,
-                )
-                VerticalControl(
-                    label = "SEC",
-                    value = shutterText(state),
-                    progress = shutterProgress(state),
-                    manual = settings.manualExposure,
-                    available = caps.supportsManualShutter,
-                    sliderHeight = sliderHeight,
-                    onProgress = { progress ->
-                        caps.exposureTimeRange?.let { range ->
-                            viewModel.setExposureTime(
-                                fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
-                                    .toLong().coerceIn(range.lower, range.upper)
-                            )
-                        }
-                    },
-                    onButton = viewModel::exposureAuto,
-                )
-                val evRange = caps.exposureCompensationRange
-                val evSpan = (evRange.upper - evRange.lower).coerceAtLeast(1)
-                if (!settings.manualExposure && evSpan > 1) {
+    BoxWithConstraints(modifier = Modifier.fillMaxHeight()) {
+        // Everything except the sliders themselves has a fixed height - the button on top, the
+        // gaps, the name and value at the foot, the lenses and the row of buttons. A fixed slider
+        // length on top of that is taller than a short screen, and what falls off the bottom is
+        // the row with SET in it. The sliders take what is left instead.
+        val sliderHeight = (maxHeight - 180.dp).coerceIn(56.dp, 170.dp)
+
+        Row(modifier = Modifier.fillMaxHeight()) {
+            Column(
+                modifier = Modifier.width(210.dp).fillMaxHeight().padding(horizontal = 10.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     VerticalControl(
-                        label = "EV",
-                        value = formatExposureCompensation(
-                            settings.exposureCompensation,
-                            caps.exposureCompensationStep,
-                        ),
-                        progress = ((settings.exposureCompensation - evRange.lower).toFloat() / evSpan)
-                            .coerceIn(0f, 1f),
-                        manual = settings.exposureCompensation != 0,
-                        available = true,
+                        label = "ISO",
+                        value = isoText(state),
+                        progress = isoProgress(state),
+                        manual = settings.manualExposure,
+                        available = caps.supportsManualIso,
                         sliderHeight = sliderHeight,
                         onProgress = { progress ->
-                            viewModel.setExposureCompensation(
-                                (evRange.lower + (progress * evSpan).roundToInt())
-                                    .coerceIn(evRange.lower, evRange.upper)
-                            )
+                            caps.isoRange?.let { range ->
+                                viewModel.setIso(
+                                    fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
+                                        .roundToInt().coerceIn(range.lower, range.upper)
+                                )
+                            }
                         },
-                        buttonLabel = "0",
-                        buttonActive = settings.exposureCompensation == 0,
-                        onButton = { viewModel.setExposureCompensation(0) },
+                        onButton = viewModel::exposureAuto,
                     )
+                    VerticalControl(
+                        label = "SEC",
+                        value = shutterText(state),
+                        progress = shutterProgress(state),
+                        manual = settings.manualExposure,
+                        available = caps.supportsManualShutter,
+                        sliderHeight = sliderHeight,
+                        onProgress = { progress ->
+                            caps.exposureTimeRange?.let { range ->
+                                viewModel.setExposureTime(
+                                    fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
+                                        .toLong().coerceIn(range.lower, range.upper)
+                                )
+                            }
+                        },
+                        onButton = viewModel::exposureAuto,
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.padding(top = 14.dp).horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    state.lenses.forEach { lens ->
+                        val risky = lens.warning != null || lens.id in state.troubled
+                        Pill(
+                            text = lens.zoomLabel,
+                            subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
+                            selected = lens.id == state.selectedLensId,
+                            onClick = { viewModel.selectLens(lens.id) },
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.padding(top = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FlatButton(
+                        label = state.settings.format.label,
+                        active = state.settings.format.writesRaw,
+                        onClick = viewModel::cycleFormat,
+                    )
+                    FlatButton(label = "SET", active = state.settingsOpen, onClick = viewModel::openSettings)
+                    FlatButton(label = "FILES", active = false, onClick = { openPhotoFolder(context) })
                 }
             }
 
-            Row(
-                modifier = Modifier.padding(top = 14.dp).horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                state.lenses.forEach { lens ->
-                    val risky = lens.warning != null || lens.id in state.troubled
-                    Pill(
-                        text = lens.zoomLabel,
-                        subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
-                        selected = lens.id == state.selectedLensId,
-                        onClick = { viewModel.selectLens(lens.id) },
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier.padding(top = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
+            Box(modifier = Modifier.width(110.dp).fillMaxHeight()) {
                 FlatButton(
-                    label = state.settings.format.label,
-                    active = state.settings.format.writesRaw,
-                    onClick = viewModel::cycleFormat,
+                    label = "ZEBRA",
+                    active = state.zebra,
+                    onClick = viewModel::toggleZebra,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp),
                 )
-                FlatButton(label = "SET", active = state.settingsOpen, onClick = viewModel::openSettings)
-                FlatButton(label = "FILES", active = false, onClick = { openPhotoFolder(context) })
+                ShutterButton(
+                    busy = state.busy,
+                    enabled = state.selectedLensId != null,
+                    onClick = viewModel::capture,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                Histogram(
+                    stats = frame,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp),
+                )
             }
-        }
-
-        Box(modifier = Modifier.width(110.dp).fillMaxHeight()) {
-            FlatButton(
-                label = "ZEBRA",
-                active = state.zebra,
-                onClick = viewModel::toggleZebra,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp),
-            )
-            ShutterButton(
-                busy = state.busy,
-                enabled = state.selectedLensId != null,
-                onClick = viewModel::capture,
-                modifier = Modifier.align(Alignment.Center),
-            )
-            Histogram(
-                stats = frame,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp),
-            )
         }
     }
 }
@@ -267,10 +252,20 @@ private fun PreviewArea(
     viewModel: CameraViewModel,
     frame: FrameStats,
     landscape: Boolean,
+    overlayInfo: Boolean = false,
     onTextureView: (TextureView?) -> Unit,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         CameraPreview(state, viewModel, frame, landscape, onTextureView)
+
+        if (overlayInfo) {
+            TopStrip(
+                state = state,
+                viewModel = viewModel,
+                overlay = true,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
+        }
 
         WhiteBalanceColumn(
             state = state,
@@ -391,15 +386,30 @@ private fun CameraPreview(
 }
 
 @Composable
-private fun TopStrip(state: CameraUiState, viewModel: CameraViewModel) {
+private fun TopStrip(
+    state: CameraUiState,
+    viewModel: CameraViewModel,
+    overlay: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
     val lens = state.selectedLens
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(
             modifier = Modifier
                 .weight(1f)
+                // Over the picture the text needs its own ground; over black it does not.
+                .then(
+                    if (overlay) {
+                        Modifier
+                            .background(Color(0x73000000), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 3.dp)
+                    } else {
+                        Modifier
+                    }
+                )
                 // Hidden on purpose: a long press is out of the way in normal use, and the
                 // report is only ever needed when something has gone wrong.
                 .pointerInput(Unit) {
@@ -565,33 +575,6 @@ private fun Controls(state: CameraUiState, viewModel: CameraViewModel, frame: Fr
             },
             onButton = viewModel::exposureAuto,
         )
-
-        // Compensation biases a meter that is not running while exposure is manual, so it only
-        // exists while the camera is metering.
-        val evRange = caps.exposureCompensationRange
-        val evSpan = (evRange.upper - evRange.lower).coerceAtLeast(1)
-        if (!settings.manualExposure && evSpan > 1) {
-            ControlRow(
-                label = "EV",
-                value = formatExposureCompensation(
-                    settings.exposureCompensation,
-                    caps.exposureCompensationStep,
-                ),
-                progress = ((settings.exposureCompensation - evRange.lower).toFloat() / evSpan)
-                    .coerceIn(0f, 1f),
-                manual = settings.exposureCompensation != 0,
-                available = true,
-                onProgress = { progress ->
-                    viewModel.setExposureCompensation(
-                        (evRange.lower + (progress * evSpan).roundToInt())
-                            .coerceIn(evRange.lower, evRange.upper)
-                    )
-                },
-                buttonLabel = "0",
-                buttonActive = settings.exposureCompensation == 0,
-                onButton = { viewModel.setExposureCompensation(0) },
-            )
-        }
 
         LensRow(state, viewModel)
         ShutterRow(state, viewModel, frame)

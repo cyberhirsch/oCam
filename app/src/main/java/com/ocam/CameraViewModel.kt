@@ -287,8 +287,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     /** Hand exposure back to the camera. ISO and shutter go together: the hardware AE is one unit. */
     fun exposureAuto() = updateSettings { it.copy(manualExposure = false) }
 
-    fun setExposureCompensation(steps: Int) = updateSettings { it.copy(exposureCompensation = steps) }
-
     fun setManualFocus(manual: Boolean) {
         if (manual && !_state.value.capabilities.supportsManualFocus) {
             showError("This lens is fixed focus")
@@ -544,8 +542,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
             iso = capabilities.isoRange?.clamp(settings.iso) ?: settings.iso,
             exposureTimeNs = capabilities.exposureTimeRange?.clamp(settings.exposureTimeNs)
                 ?: settings.exposureTimeNs,
-            exposureCompensation = capabilities.exposureCompensationRange
-                .clamp(settings.exposureCompensation),
             manualFocus = settings.manualFocus && capabilities.supportsManualFocus,
             focusDiopters = settings.focusDiopters.coerceIn(0f, capabilities.minFocusDistance),
             manualWhiteBalance = settings.manualWhiteBalance &&

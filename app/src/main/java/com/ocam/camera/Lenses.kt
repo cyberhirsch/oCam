@@ -76,8 +76,6 @@ data class LensCapabilities(
     /** Closest focus in diopters (1/m). 0 means the lens is fixed focus. */
     val minFocusDistance: Float,
     val apertures: List<Float>,
-    val exposureCompensationRange: Range<Int>,
-    val exposureCompensationStep: Float,
     val supportsManualSensor: Boolean,
     val supportsManualWhiteBalance: Boolean,
     val supportsRaw: Boolean,
@@ -95,8 +93,6 @@ data class LensCapabilities(
             exposureTimeRange = null,
             minFocusDistance = 0f,
             apertures = emptyList(),
-            exposureCompensationRange = Range(0, 0),
-            exposureCompensationStep = 1f,
             supportsManualSensor = false,
             supportsManualWhiteBalance = false,
             supportsRaw = false,
@@ -116,10 +112,6 @@ fun CameraCharacteristics.capabilities(): LensCapabilities {
         exposureTimeRange = get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE),
         minFocusDistance = get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f,
         apertures = get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.toList().orEmpty(),
-        exposureCompensationRange = get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
-            ?: Range(0, 0),
-        exposureCompensationStep = get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
-            ?.toFloat() ?: 1f,
         supportsManualSensor = hasCapability(
             CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR
         ),

@@ -30,14 +30,12 @@ enum class CaptureFormat(
 
 /**
  * What the camera is being told to do. Exposure is one unit on purpose: the hardware AE is
- * all-or-nothing, so ISO and shutter go manual together and exposure compensation only exists
- * while AE is on.
+ * all-or-nothing, so ISO and shutter go manual together.
  */
 data class CaptureSettings(
     val manualExposure: Boolean = false,
     val iso: Int = 100,
     val exposureTimeNs: Long = 1_000_000_000L / 60,
-    val exposureCompensation: Int = 0,
     val manualFocus: Boolean = false,
     /** Focus distance in diopters (1/m). 0 is infinity. */
     val focusDiopters: Float = 0f,

@@ -28,9 +28,6 @@ fun formatFocus(diopters: Float): String {
 fun formatAperture(aperture: Float?): String? =
     aperture?.let { String.format(Locale.US, "f/%.1f", it) }
 
-fun formatExposureCompensation(steps: Int, step: Float): String =
-    String.format(Locale.US, "%+.1f EV", steps * step)
-
 fun formatKelvin(kelvin: Int): String = "${kelvin}K"
 
 /** Sliders for ISO and shutter feel right on a log scale: equal travel per stop. */
