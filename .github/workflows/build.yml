@@ -82,13 +82,16 @@ jobs:
 
           gh release edit debug-latest --title "oCam $VERSION" --notes "$notes"
 
-          # Drop the previous build's versioned file, otherwise the rolling
-          # release slowly fills up with 24 MB copies.
-          gh release view debug-latest --json assets -q '.assets[].name' \
-            | grep -E '^oCam-1\.0\.[0-9]+-debug\.apk$' \
-            | grep -vx "$VERSIONED" \
-            | while read -r stale; do
-                gh release delete-asset debug-latest "$stale" --yes || true
-              done
-
           gh release upload debug-latest "$VERSIONED" oCam-debug.apk --clobber
+
+          # The rolling release holds exactly this build: the versioned file and
+          # the fixed-name copy. Anything else is a leftover from an older build
+          # and would quietly hand someone a stale APK.
+          gh release view debug-latest --json assets -q '.assets[].name' \
+            | while read -r asset; do
+                case "$asset" in
+                  "$VERSIONED" | oCam-debug.apk) ;;
+                  *) echo "Removing stale asset $asset"
+                     gh release delete-asset debug-latest "$asset" --yes || true ;;
+                esac
+              done
