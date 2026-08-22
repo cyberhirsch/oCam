@@ -5,7 +5,6 @@ import android.content.Context
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
-import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -61,6 +60,9 @@ class CameraController(context: Context, private val listener: Listener) {
 
     private enum class State { PREVIEW, WAIT_FOCUS, WAIT_PRECAPTURE, WAIT_EXPOSURE, CAPTURING }
 
+    /** One attempt at a set of output streams: null means "do not ask for this one". */
+    private data class StreamPlan(val jpeg: Size?, val raw: Size?)
+
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(CameraManager::class.java)
 
@@ -80,6 +82,8 @@ class CameraController(context: Context, private val listener: Listener) {
     private var jpegReader: ImageReader? = null
     private var rawReader: ImageReader? = null
     private var openLens: Lens? = null
+    private var streamPlans: List<StreamPlan> = emptyList()
+    private var planIndex = 0
     private var currentLensId: String? = null
     private var currentTexture: SurfaceTexture? = null
     private var openAttempts = 0
@@ -190,18 +194,8 @@ class CameraController(context: Context, private val listener: Listener) {
             meteringRegion = null
             openLens = lens
             previewSize = choosePreviewSize(map.getOutputSizes(SurfaceTexture::class.java), jpegSize)
-
-            jpegReader = ImageReader.newInstance(
-                jpegSize.width, jpegSize.height, ImageFormat.JPEG, 2
-            ).apply { setOnImageAvailableListener(jpegAvailable, ioHandler) }
-
-            rawReader = if (capabilities.supportsRaw && rawSize != null) {
-                ImageReader.newInstance(
-                    rawSize.width, rawSize.height, ImageFormat.RAW_SENSOR, 2
-                ).apply { setOnImageAvailableListener(rawAvailable, ioHandler) }
-            } else {
-                null
-            }
+            streamPlans = buildStreamPlans(chars, jpegSize, rawSize)
+            planIndex = 0
 
             texture.setDefaultBufferSize(previewSize.width, previewSize.height)
             previewSurface = Surface(texture)
@@ -236,10 +230,7 @@ class CameraController(context: Context, private val listener: Listener) {
         session = null
         runCatching { device?.close() }
         device = null
-        runCatching { jpegReader?.close() }
-        jpegReader = null
-        runCatching { rawReader?.close() }
-        rawReader = null
+        closeReaders()
         runCatching { previewSurface?.release() }
         previewSurface = null
         previewBuilder = null
@@ -249,12 +240,18 @@ class CameraController(context: Context, private val listener: Listener) {
         state = State.PREVIEW
     }
 
+    private fun closeReaders() {
+        runCatching { jpegReader?.close() }
+        jpegReader = null
+        runCatching { rawReader?.close() }
+        rawReader = null
+    }
+
     private val deviceCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
             device = camera
             openAttempts = 0
-            openLens?.let { listener.onLensOpened(it, capabilities, previewSize) }
-            createSession()
+            configureCurrentPlan()
         }
 
         override fun onDisconnected(camera: CameraDevice) {
@@ -269,9 +266,53 @@ class CameraController(context: Context, private val listener: Listener) {
         }
     }
 
-    private fun createSession() {
+    /**
+     * What to ask the camera for, richest first. Only the main cameras are guaranteed to accept
+     * preview + full size JPEG + full size RAW at once; the extra sensors frequently refuse, so
+     * every simpler combination is tried before giving up on the lens.
+     */
+    private fun buildStreamPlans(
+        characteristics: CameraCharacteristics,
+        jpegMax: Size?,
+        rawMax: Size?,
+    ): List<StreamPlan> {
+        val raw = rawMax?.takeIf {
+            characteristics.hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW)
+        }
+        val jpegSmall = characteristics.streamMap()
+            ?.getOutputSizes(ImageFormat.JPEG)
+            ?.filter { it.width <= 1920 && it.height <= 1080 }
+            ?.maxByOrNull { it.width.toLong() * it.height }
+
+        return buildList {
+            if (jpegMax != null && raw != null) add(StreamPlan(jpegMax, raw))
+            if (raw != null) add(StreamPlan(null, raw))
+            if (jpegMax != null) add(StreamPlan(jpegMax, null))
+            if (jpegSmall != null && jpegSmall != jpegMax) add(StreamPlan(jpegSmall, null))
+            // Last resort: a preview and nothing else, so the lens at least shows a picture.
+            add(StreamPlan(null, null))
+        }
+    }
+
+    private fun configureCurrentPlan() {
         val camera = device ?: return
         val preview = previewSurface ?: return
+        val plan = streamPlans.getOrNull(planIndex)
+        if (plan == null) {
+            listener.onError("Lens ${openLens?.id} rejected every stream combination")
+            return
+        }
+
+        closeReaders()
+        plan.jpeg?.let { size ->
+            jpegReader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2)
+                .apply { setOnImageAvailableListener(jpegAvailable, ioHandler) }
+        }
+        plan.raw?.let { size ->
+            rawReader = ImageReader.newInstance(size.width, size.height, ImageFormat.RAW_SENSOR, 2)
+                .apply { setOnImageAvailableListener(rawAvailable, ioHandler) }
+        }
+
         try {
             val outputs = mutableListOf(OutputConfiguration(preview))
             jpegReader?.let { outputs += OutputConfiguration(it.surface) }
@@ -284,19 +325,40 @@ class CameraController(context: Context, private val listener: Listener) {
                     sessionCallback,
                 )
             )
-        } catch (e: CameraAccessException) {
-            listener.onError("Cannot configure camera: ${e.reason}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Stream plan $planIndex could not be submitted", e)
+            tryNextPlan()
+        }
+    }
+
+    private fun tryNextPlan() {
+        planIndex++
+        if (planIndex < streamPlans.size) {
+            configureCurrentPlan()
+        } else {
+            listener.onError("Lens ${openLens?.id} rejected every stream combination")
         }
     }
 
     private val sessionCallback = object : CameraCaptureSession.StateCallback() {
         override fun onConfigured(configured: CameraCaptureSession) {
             session = configured
+            // Report what the lens actually granted, not what its metadata promised: a lens can
+            // advertise RAW and still refuse to deliver it alongside a preview.
+            openLens?.let { lens ->
+                listener.onLensOpened(
+                    lens,
+                    capabilities.copy(supportsRaw = rawReader != null),
+                    previewSize,
+                )
+            }
             startPreview()
         }
 
         override fun onConfigureFailed(configured: CameraCaptureSession) {
-            listener.onError("This lens rejected the preview + capture streams")
+            Log.w(TAG, "Stream plan $planIndex rejected by lens ${openLens?.id}")
+            runCatching { configured.close() }
+            tryNextPlan()
         }
     }
 
@@ -470,17 +532,20 @@ class CameraController(context: Context, private val listener: Listener) {
         if (capturing) return
         val active = session ?: return
         val current = settings
-        if (current.format.writesRaw && rawReader == null) {
-            listener.onError("This lens has no RAW output")
+        val willWriteJpeg = current.format.writesJpeg && jpegReader != null
+        val willWriteRaw = current.format.writesRaw && rawReader != null
+        if (!willWriteJpeg && !willWriteRaw) {
+            listener.onError(
+                if (current.format.writesRaw) "This lens gave no RAW stream"
+                else "This lens gave no capture stream"
+            )
             return
         }
         capturing = true
         listener.onCaptureBusy(true)
         baseName = PhotoStore.newBaseName(System.currentTimeMillis())
         pendingOrientation = outputOrientation()
-        pendingSaves.set(
-            (if (current.format.writesJpeg) 1 else 0) + (if (current.format.writesRaw) 1 else 0)
-        )
+        pendingSaves.set((if (willWriteJpeg) 1 else 0) + (if (willWriteRaw) 1 else 0))
         cameraHandler.postDelayed(convergenceTimeout, CONVERGENCE_TIMEOUT_MS)
         cameraHandler.postDelayed(saveTimeout, SAVE_TIMEOUT_MS)
 
