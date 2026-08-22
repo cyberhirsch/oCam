@@ -70,6 +70,7 @@ class CameraController(context: Context, private val listener: Listener) {
 
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(CameraManager::class.java)
+    private val memory = LensMemory(appContext)
 
     private val cameraThread = HandlerThread("camera").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
@@ -205,6 +206,8 @@ class CameraController(context: Context, private val listener: Listener) {
             texture.setDefaultBufferSize(previewSize.width, previewSize.height)
             previewSurface = Surface(texture)
 
+            // Written before the call that might not come back, so the next start knows.
+            memory.beginOpen(lensId)
             manager.openCamera(lensId, cameraExecutor, deviceCallback)
         } catch (e: Exception) {
             Log.e(TAG, "Cannot open lens $lensId", e)
@@ -224,6 +227,7 @@ class CameraController(context: Context, private val listener: Listener) {
                 OPEN_RETRY_DELAY_MS,
             )
         } else {
+            lensId?.let { memory.openFailed(it) }
             listener.onError("Cannot open lens ${lensId ?: "?"} ($reason)")
         }
     }
@@ -350,6 +354,7 @@ class CameraController(context: Context, private val listener: Listener) {
             session = configured
             // Report what the lens actually granted, not what its metadata promised: a lens can
             // advertise RAW and still refuse to deliver it alongside a preview.
+            openLens?.let { lens -> memory.openSucceeded(lens.id) }
             openLens?.let { lens ->
                 listener.onLensOpened(
                     lens,

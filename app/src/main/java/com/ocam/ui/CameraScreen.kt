@@ -285,11 +285,14 @@ private fun LensRow(state: CameraUiState, viewModel: CameraViewModel) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         state.lenses.forEach { lens ->
+            // "!" marks a lens that looks like a helper sensor or has misbehaved here before.
+            // It still opens, but only on a second tap.
+            val risky = lens.warning != null || lens.id in state.troubled
             Pill(
                 // Several cameras on one side can share a focal length, so the id is what
                 // actually tells them apart.
                 text = lens.zoomLabel,
-                subtitle = "${lens.facingLabel} ${lens.id}",
+                subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
                 selected = lens.id == state.selectedLensId,
                 onClick = { viewModel.selectLens(lens.id) },
             )

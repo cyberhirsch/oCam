@@ -56,6 +56,28 @@ show up in the gallery immediately.
 **A live readout** across the top shows what the camera actually did - the ISO, shutter,
 aperture and focus distance from the capture results, not just what was requested.
 
+### Sensors that are not cameras
+
+Probing every camera id also turns up things that are not photo cameras: depth and
+infrared helpers, and sensors a manufacturer reserves for its own apps. On some
+firmware, opening one of those does not fail cleanly - it takes the camera service
+down until the phone is rebooted.
+
+Two defences, because neither is enough alone:
+
+- **Before opening.** Cameras that declare `SYSTEM_CAMERA`, or whose colour filter
+  is infrared, are never offered. Softer signals - a depth or motion-tracking
+  capability, or a largest image under one megapixel - only earn a `!` on the lens
+  button and a warning; they still open, on a second tap, because a guess should
+  not silently hide a camera someone wants.
+- **After opening.** The app writes down which lens it is about to open, and clears
+  the note once the lens is running. A note still there at the next start means
+  that lens is what went down. It is marked, never opened automatically, and takes
+  a deliberate second tap from then on.
+
+That second part is what makes this work on a phone nobody has tested: the device
+teaches the app which of its cameras are real, one attempt at a time.
+
 ### When a lens misbehaves
 
 Long press the readout at the top of the screen. The app collects what the device

@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ocam.camera.CameraController
 import com.ocam.camera.Diagnostics
+import com.ocam.camera.LensMemory
 import com.ocam.camera.CaptureFormat
 import com.ocam.camera.CaptureSettings
 import com.ocam.camera.Lens
@@ -40,6 +41,8 @@ data class CameraUiState(
     val streamSummary: String = "",
     /** Non-null while the diagnostics sheet is open. */
     val diagnostics: String? = null,
+    /** Lenses that failed or took the camera down on this device. */
+    val troubled: Set<String> = emptySet(),
 ) {
     val selectedLens: Lens? get() = lenses.firstOrNull { it.id == selectedLensId }
 
@@ -63,15 +66,30 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     private var resumed = false
     private var openedLensId: String? = null
     private var statusJob: Job? = null
+    private val memory = LensMemory(application)
+    private var armedLensId: String? = null
 
     init {
+        // Before touching a camera: if a lens was mid-open when the app last went away, that is
+        // the one that took it down. Some firmware needs a reboot after this, so it must not be
+        // opened again by accident.
+        memory.takeUnfinishedOpen()?.let { crashed ->
+            memory.markTroubled(crashed)
+            showError("Lens $crashed did not come back last time - handle with care")
+        }
+
         viewModelScope.launch {
             // Enumerating lenses touches every camera's characteristics; keep it off the main thread.
             val lenses = withContext(Dispatchers.Default) { controller.lenses }
             _state.update { current ->
                 current.copy(
                     lenses = lenses,
-                    selectedLensId = current.selectedLensId ?: lenses.firstOrNull()?.id,
+                    troubled = memory.troubled(),
+                    // Never start on a lens known to misbehave.
+                    selectedLensId = current.selectedLensId
+                        ?: lenses.firstOrNull { it.warning == null && it.id !in memory.troubled() }
+                            ?.id
+                        ?: lenses.firstOrNull()?.id,
                 )
             }
             openIfReady()
@@ -122,8 +140,26 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
 
     fun selectLens(lensId: String) {
         if (_state.value.selectedLensId == lensId) return
+        val lens = _state.value.lenses.firstOrNull { it.id == lensId } ?: return
+
+        // A lens that looks like a helper sensor, or that already went wrong here, takes two
+        // taps. The first one explains what is about to happen.
+        val risk = riskReason(lens)
+        if (risk != null && armedLensId != lensId) {
+            armedLensId = lensId
+            showError("$risk - tap again to open it anyway")
+            return
+        }
+
+        armedLensId = null
         _state.update { it.copy(selectedLensId = lensId) }
         openIfReady()
+    }
+
+    private fun riskReason(lens: Lens): String? = when {
+        lens.id in memory.troubled() -> "Lens ${lens.id} went wrong on this phone before"
+        lens.warning != null -> "Lens ${lens.id} ${lens.warning}"
+        else -> null
     }
 
     fun setFormat(format: CaptureFormat) = updateSettings { it.copy(format = format) }
@@ -273,6 +309,14 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
             }
             appendLine("OFFERED: ${current.lenses.size} lenses - " +
                 current.lenses.joinToString(", ") { "${it.id}:${it.facingLabel}" })
+            val flagged = current.lenses.filter { it.warning != null }
+            if (flagged.isNotEmpty()) {
+                appendLine("FLAGGED:")
+                flagged.forEach { appendLine("  id ${it.id}: ${it.warning}") }
+            }
+            if (current.troubled.isNotEmpty()) {
+                appendLine("WENT WRONG HERE: ${current.troubled.sorted().joinToString(", ")}")
+            }
             current.error?.let { appendLine("LAST ERROR: $it") }
         }
         return Diagnostics.report(application, manager, openState.trimEnd())
@@ -356,7 +400,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         // A camera the system hides can refuse to open. Forget what we thought was open so
         // picking the same lens again actually retries instead of doing nothing.
         openedLensId = null
-        _state.update { it.copy(error = message, busy = false) }
+        _state.update { it.copy(error = message, busy = false, troubled = memory.troubled()) }
         statusJob?.cancel()
         statusJob = viewModelScope.launch {
             delay(4_000)

@@ -41,6 +41,8 @@ data class Lens(
     val origin: LensOrigin,
     val supportsRaw: Boolean,
     val supportsManualSensor: Boolean,
+    /** Non-null when this looks like a helper sensor rather than a camera worth opening. */
+    val warning: String? = null,
 ) {
     val facingLabel: String
         get() = when (facing) {
@@ -187,6 +189,7 @@ fun enumerateLenses(manager: CameraManager): List<Lens> {
             supportsManualSensor = characteristics.hasCapability(
                 CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR
             ),
+            warning = characteristics.helperSensorWarning(),
         )
     }
 
@@ -208,9 +211,44 @@ fun enumerateLenses(manager: CameraManager): List<Lens> {
         .sortedWith(compareBy({ facingOrder(it.facing) }, { it.zoom }, { it.id }))
 }
 
-private fun CameraCharacteristics.isUsable(): Boolean =
-    hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE) &&
-        streamMap() != null
+/**
+ * Whether this camera should be offered at all. The exclusions are the ones the platform actually
+ * documents - a camera reserved for system apps, or one that produces no ordinary image - because
+ * anything looser risks hiding a real lens, and opening one of these can wedge the camera service
+ * until the phone is rebooted.
+ */
+private fun CameraCharacteristics.isUsable(): Boolean {
+    if (!hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE)) {
+        return false
+    }
+    if (streamMap() == null) return false
+    // Reserved for privileged apps: a normal app is not allowed to open it, and some firmware
+    // handles the refusal badly.
+    if (hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_SYSTEM_CAMERA)) return false
+    // An infrared sensor is not a photo camera, whatever else it claims.
+    val filter = get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
+    if (filter == CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_NIR) return false
+    return true
+}
+
+/**
+ * Softer signals: these lenses are still offered, because the guesses are not certain enough to
+ * hide a camera someone might want, but they are worth a warning before opening.
+ */
+private fun CameraCharacteristics.helperSensorWarning(): String? {
+    if (hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT)) {
+        return "reports itself as a depth sensor"
+    }
+    if (hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MOTION_TRACKING)) {
+        return "reports itself as a motion tracking sensor"
+    }
+    val jpeg = jpegSize()
+    if (jpeg == null) return "offers no still image output"
+    if (jpeg.width.toLong() * jpeg.height < 1_000_000L) {
+        return "largest image is only ${jpeg.width}x${jpeg.height}"
+    }
+    return null
+}
 
 private fun CameraCharacteristics.equivalent35mm(focalLengthMm: Float): Int {
     val sensor = get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: return 0
