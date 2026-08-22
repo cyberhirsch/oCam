@@ -1,4 +1,4 @@
-package com.minimal.camera
+package com.ocam
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -29,8 +29,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.minimal.camera.ui.CameraScreen
-import com.minimal.camera.ui.MinimalCameraTheme
+import com.ocam.ui.CameraScreen
+import com.ocam.ui.OCamTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
         ) == PackageManager.PERMISSION_GRANTED
 
         setContent {
-            MinimalCameraTheme {
+            OCamTheme {
                 if (hasCameraPermission) {
                     CameraScreen(viewModel)
                 } else {
@@ -101,7 +101,7 @@ private fun PermissionScreen(onRequest: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            text = "Minimal Camera needs the camera permission to show a preview and take photos.",
+            text = "oCam needs the camera permission to show a preview and take photos.",
             color = Color.White,
             fontSize = 15.sp,
             textAlign = TextAlign.Center,

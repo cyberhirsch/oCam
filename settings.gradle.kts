@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "MinimalCamera"
+rootProject.name = "oCam"
 include(":app")

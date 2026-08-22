@@ -1,4 +1,4 @@
-package com.minimal.camera.camera
+package com.ocam.camera
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -26,7 +26,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import android.view.Surface
-import com.minimal.camera.io.PhotoStore
+import com.ocam.io.PhotoStore
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs

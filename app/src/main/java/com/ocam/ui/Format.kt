@@ -1,4 +1,4 @@
-package com.minimal.camera.ui
+package com.ocam.ui
 
 import java.util.Locale
 import kotlin.math.exp

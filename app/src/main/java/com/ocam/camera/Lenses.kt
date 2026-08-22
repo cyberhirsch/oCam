@@ -1,4 +1,4 @@
-package com.minimal.camera.camera
+package com.ocam.camera
 
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics

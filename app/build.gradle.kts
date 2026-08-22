@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.minimal.camera"
+    namespace = "com.ocam"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.minimal.camera"
+        applicationId = "com.ocam"
         // MediaStore RELATIVE_PATH and direct opening of physical cameras both need API 29.
         minSdk = 29
         targetSdk = 35

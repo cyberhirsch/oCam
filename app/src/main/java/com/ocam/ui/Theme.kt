@@ -1,4 +1,4 @@
-package com.minimal.camera.ui
+package com.ocam.ui
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -17,6 +17,6 @@ private val CameraColors = darkColorScheme(
 )
 
 @Composable
-fun MinimalCameraTheme(content: @Composable () -> Unit) {
+fun OCamTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = CameraColors, content = content)
 }

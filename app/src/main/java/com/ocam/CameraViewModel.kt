@@ -1,15 +1,15 @@
-package com.minimal.camera
+package com.ocam
 
 import android.app.Application
 import android.graphics.SurfaceTexture
 import android.util.Size
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.minimal.camera.camera.CameraController
-import com.minimal.camera.camera.CaptureFormat
-import com.minimal.camera.camera.CaptureSettings
-import com.minimal.camera.camera.Lens
-import com.minimal.camera.camera.LensCapabilities
+import com.ocam.camera.CameraController
+import com.ocam.camera.CaptureFormat
+import com.ocam.camera.CaptureSettings
+import com.ocam.camera.Lens
+import com.ocam.camera.LensCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -19,9 +19,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-/** Which manual control the bottom sheet is currently showing. */
-enum class Control { ISO, SHUTTER, FOCUS, WHITE_BALANCE, EV }
 
 data class CameraUiState(
     val lenses: List<Lens> = emptyList(),
@@ -34,7 +31,6 @@ data class CameraUiState(
     val liveExposureNs: Long? = null,
     val liveFocusDiopters: Float? = null,
     val liveAperture: Float? = null,
-    val openControl: Control? = null,
     val busy: Boolean = false,
     val status: String? = null,
     val error: String? = null,
@@ -120,12 +116,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
 
     fun selectLens(lensId: String) {
         if (_state.value.selectedLensId == lensId) return
-        _state.update { it.copy(selectedLensId = lensId, openControl = null) }
+        _state.update { it.copy(selectedLensId = lensId) }
         openIfReady()
-    }
-
-    fun openControl(control: Control?) {
-        _state.update { it.copy(openControl = if (it.openControl == control) null else control) }
     }
 
     fun setFormat(format: CaptureFormat) = updateSettings { it.copy(format = format) }
@@ -165,9 +157,26 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    fun setIso(iso: Int) = updateSettings { it.copy(iso = iso) }
+    // Touching a slider IS the decision to go manual - there is no separate switch to find.
+    fun setIso(iso: Int) = updateSettings { current ->
+        current.copy(
+            manualExposure = true,
+            iso = iso,
+            exposureTimeNs = if (current.manualExposure) current.exposureTimeNs
+            else seedExposure(current),
+        )
+    }
 
-    fun setExposureTime(nanos: Long) = updateSettings { it.copy(exposureTimeNs = nanos) }
+    fun setExposureTime(nanos: Long) = updateSettings { current ->
+        current.copy(
+            manualExposure = true,
+            exposureTimeNs = nanos,
+            iso = if (current.manualExposure) current.iso else seedIso(current),
+        )
+    }
+
+    /** Hand exposure back to the camera. ISO and shutter go together: the hardware AE is one unit. */
+    fun exposureAuto() = updateSettings { it.copy(manualExposure = false) }
 
     fun setExposureCompensation(steps: Int) = updateSettings { it.copy(exposureCompensation = steps) }
 
@@ -185,7 +194,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         if (!manual) controller.clearMetering()
     }
 
-    fun setFocusDiopters(diopters: Float) = updateSettings { it.copy(focusDiopters = diopters) }
+    fun setFocusDiopters(diopters: Float) =
+        updateSettings { it.copy(manualFocus = true, focusDiopters = diopters) }
+
+    fun focusAuto() {
+        updateSettings { it.copy(manualFocus = false) }
+        controller.clearMetering()
+    }
 
     fun setManualWhiteBalance(manual: Boolean) {
         if (manual && !_state.value.capabilities.supportsManualWhiteBalance) {
@@ -195,7 +210,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         updateSettings { it.copy(manualWhiteBalance = manual) }
     }
 
-    fun setKelvin(kelvin: Int) = updateSettings { it.copy(kelvin = kelvin) }
+    fun setKelvin(kelvin: Int) =
+        updateSettings { it.copy(manualWhiteBalance = true, kelvin = kelvin) }
+
+    fun whiteBalanceAuto() = updateSettings { it.copy(manualWhiteBalance = false) }
 
     fun capture() = controller.capture()
 

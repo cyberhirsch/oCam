@@ -1,4 +1,4 @@
-package com.minimal.camera.io
+package com.ocam.io
 
 import android.content.ContentValues
 import android.content.Context
@@ -15,10 +15,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Writes photos to Pictures/MinimalCamera through MediaStore, so no storage permission is needed. */
+/** Writes photos to Pictures/oCam through MediaStore, so no storage permission is needed. */
 object PhotoStore {
 
-    private const val ALBUM = "MinimalCamera"
+    private const val ALBUM = "oCam"
 
     fun newBaseName(timestampMillis: Long): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date(timestampMillis))

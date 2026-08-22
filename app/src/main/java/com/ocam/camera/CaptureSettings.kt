@@ -1,4 +1,4 @@
-package com.minimal.camera.camera
+package com.ocam.camera
 
 import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.RggbChannelVector
