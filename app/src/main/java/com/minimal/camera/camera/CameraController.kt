@@ -87,6 +87,7 @@ class CameraController(context: Context, private val listener: Listener) {
     private var autoAfMode = CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
     private var maxAfRegions = 0
     private var maxAeRegions = 0
+    private var shadingMapAvailable = false
     private var meteringRegion: MeteringRectangle? = null
     private var state = State.PREVIEW
     private var lastPublishMs = 0L
@@ -182,6 +183,9 @@ class CameraController(context: Context, private val listener: Listener) {
                 ?: CameraCharacteristics.LENS_FACING_BACK
             maxAfRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
             maxAeRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
+            shadingMapAvailable = chars
+                .get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES)
+                ?.contains(CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON) == true
             autoAfMode = pickAutoAfMode(chars)
             meteringRegion = null
             openLens = lens
@@ -378,6 +382,16 @@ class CameraController(context: Context, private val listener: Listener) {
 
         if (caps.supportsManualAperture) {
             current.aperture?.let { builder.set(CaptureRequest.LENS_APERTURE, it) }
+        }
+
+        // DngCreator turns the lens shading map in the capture result into the DNG's shading
+        // opcode. Without it a converter renders the corners uncorrected, so ask for the map
+        // whenever a RAW file is going to be written.
+        if (current.format.writesRaw && shadingMapAvailable) {
+            builder.set(
+                CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
+                CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON,
+            )
         }
     }
 
