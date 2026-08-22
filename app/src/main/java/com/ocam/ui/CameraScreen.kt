@@ -100,14 +100,7 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
                     Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                         PreviewArea(state, viewModel, frame, landscape) { textureView = it }
                     }
-                    Column(
-                        modifier = Modifier
-                            .width(320.dp)
-                            .fillMaxHeight()
-                            .verticalScroll(rememberScrollState()),
-                    ) {
-                        Controls(state, viewModel, frame)
-                    }
+                    LandscapeControls(state, viewModel, frame)
                 }
             }
         } else {
@@ -131,6 +124,139 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
             onCopy = { viewModel.copiedDiagnostics() },
             onClose = viewModel::closeDiagnostics,
         )
+    }
+}
+
+/**
+ * On its side the sliders stand up and the shutter keeps the middle of the outer edge - the same
+ * place under the same thumb as the bottom centre when the phone is upright.
+ */
+@Composable
+private fun LandscapeControls(
+    state: CameraUiState,
+    viewModel: CameraViewModel,
+    frame: FrameStats,
+) {
+    val context = LocalContext.current
+    val settings = state.settings
+    val caps = state.capabilities
+    val sliderHeight = 150.dp
+
+    Row(modifier = Modifier.fillMaxHeight()) {
+        Column(
+            modifier = Modifier.width(210.dp).fillMaxHeight().padding(horizontal = 10.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                VerticalControl(
+                    label = "ISO",
+                    value = isoText(state),
+                    progress = isoProgress(state),
+                    manual = settings.manualExposure,
+                    available = caps.supportsManualIso,
+                    sliderHeight = sliderHeight,
+                    onProgress = { progress ->
+                        caps.isoRange?.let { range ->
+                            viewModel.setIso(
+                                fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
+                                    .roundToInt().coerceIn(range.lower, range.upper)
+                            )
+                        }
+                    },
+                    onButton = viewModel::exposureAuto,
+                )
+                VerticalControl(
+                    label = "SEC",
+                    value = shutterText(state),
+                    progress = shutterProgress(state),
+                    manual = settings.manualExposure,
+                    available = caps.supportsManualShutter,
+                    sliderHeight = sliderHeight,
+                    onProgress = { progress ->
+                        caps.exposureTimeRange?.let { range ->
+                            viewModel.setExposureTime(
+                                fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
+                                    .toLong().coerceIn(range.lower, range.upper)
+                            )
+                        }
+                    },
+                    onButton = viewModel::exposureAuto,
+                )
+                val evRange = caps.exposureCompensationRange
+                val evSpan = (evRange.upper - evRange.lower).coerceAtLeast(1)
+                if (!settings.manualExposure && evSpan > 1) {
+                    VerticalControl(
+                        label = "EV",
+                        value = formatExposureCompensation(
+                            settings.exposureCompensation,
+                            caps.exposureCompensationStep,
+                        ),
+                        progress = ((settings.exposureCompensation - evRange.lower).toFloat() / evSpan)
+                            .coerceIn(0f, 1f),
+                        manual = settings.exposureCompensation != 0,
+                        available = true,
+                        sliderHeight = sliderHeight,
+                        onProgress = { progress ->
+                            viewModel.setExposureCompensation(
+                                (evRange.lower + (progress * evSpan).roundToInt())
+                                    .coerceIn(evRange.lower, evRange.upper)
+                            )
+                        },
+                        buttonLabel = "0",
+                        buttonActive = settings.exposureCompensation == 0,
+                        onButton = { viewModel.setExposureCompensation(0) },
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.padding(top = 14.dp).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                state.lenses.forEach { lens ->
+                    val risky = lens.warning != null || lens.id in state.troubled
+                    Pill(
+                        text = lens.zoomLabel,
+                        subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
+                        selected = lens.id == state.selectedLensId,
+                        onClick = { viewModel.selectLens(lens.id) },
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                FlatButton(
+                    label = state.settings.format.label,
+                    active = state.settings.format.writesRaw,
+                    onClick = viewModel::cycleFormat,
+                )
+                FlatButton(label = "SET", active = state.settingsOpen, onClick = viewModel::openSettings)
+                FlatButton(label = "FILES", active = false, onClick = { openPhotoFolder(context) })
+            }
+        }
+
+        Box(modifier = Modifier.width(110.dp).fillMaxHeight()) {
+            FlatButton(
+                label = "ZEBRA",
+                active = state.zebra,
+                onClick = viewModel::toggleZebra,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp),
+            )
+            ShutterButton(
+                busy = state.busy,
+                enabled = state.selectedLensId != null,
+                onClick = viewModel::capture,
+                modifier = Modifier.align(Alignment.Center),
+            )
+            Histogram(
+                stats = frame,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp),
+            )
+        }
     }
 }
 
@@ -331,8 +457,8 @@ private fun FocusColumn(
                 modifier = Modifier.height(150.dp),
             )
         }
-        FlatButton(
-            label = "AF",
+        SquareButton(
+            label = "A",
             active = !state.settings.manualFocus,
             enabled = caps.supportsManualFocus,
             onClick = {
@@ -360,8 +486,8 @@ private fun WhiteBalanceColumn(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(text = whiteBalanceText(state), color = Color(0xCCFFFFFF), fontSize = 10.sp)
-        FlatButton(
-            label = "AWB",
+        SquareButton(
+            label = "A",
             active = !settings.manualWhiteBalance,
             onClick = viewModel::whiteBalanceAuto,
         )

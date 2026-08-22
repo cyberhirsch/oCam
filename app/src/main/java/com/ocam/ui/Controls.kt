@@ -33,6 +33,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -182,6 +183,87 @@ fun FlatButton(
     )
 }
 
+/** The auto button: a square with one letter in it, the smallest thing that can still be hit. */
+@Composable
+fun SquareButton(
+    label: String,
+    active: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val background = when {
+        !enabled -> Color(0x0DFFFFFF)
+        active -> Color.White
+        else -> Color(0x1FFFFFFF)
+    }
+    val foreground = when {
+        !enabled -> Color(0x40FFFFFF)
+        active -> Color.Black
+        else -> Color(0xCCFFFFFF)
+    }
+    Box(
+        modifier = modifier
+            .size(26.dp)
+            .clip(RoundedCornerShape(2.dp))
+            .background(background)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text = label, color = foreground, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/**
+ * The same control stood on end, for the panel beside the frame when the phone is on its side.
+ * Button on top, slider down the middle, name and value at the foot.
+ */
+@Composable
+fun VerticalControl(
+    label: String,
+    value: String,
+    progress: Float,
+    manual: Boolean,
+    available: Boolean,
+    onProgress: (Float) -> Unit,
+    sliderHeight: Dp,
+    buttonLabel: String = "A",
+    buttonActive: Boolean = !manual,
+    showSlider: Boolean = true,
+    onButton: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.semantics { contentDescription = "$label $value" },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        SquareButton(
+            label = buttonLabel,
+            active = buttonActive,
+            enabled = available,
+            onClick = onButton,
+        )
+        if (showSlider) {
+            VerticalThinSlider(
+                progress = progress,
+                manual = manual,
+                enabled = available,
+                onProgress = onProgress,
+                modifier = Modifier.height(sliderHeight),
+            )
+        } else {
+            Spacer(modifier = Modifier.height(sliderHeight))
+        }
+        Text(text = label, color = Color(0x73FFFFFF), fontSize = 9.sp)
+        Text(
+            text = value,
+            color = if (manual && available) Color.White else Color(0xA6FFFFFF),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
 /**
  * One camera parameter on one line: name, the button that hands it back to the camera, the
  * slider, and the value it currently has. The choice is only ever "press the button" or "move
@@ -195,7 +277,7 @@ fun ControlRow(
     manual: Boolean,
     available: Boolean,
     onProgress: (Float) -> Unit,
-    buttonLabel: String = "AUTO",
+    buttonLabel: String = "A",
     buttonActive: Boolean = !manual,
     showSlider: Boolean = true,
     onButton: () -> Unit,
@@ -207,7 +289,7 @@ fun ControlRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RowLabel(label)
-        FlatButton(
+        SquareButton(
             label = buttonLabel,
             active = buttonActive,
             enabled = available,
@@ -293,9 +375,14 @@ fun Pill(
 
 /** A ring, not a disc: the frame stays visible through the middle of the control. */
 @Composable
-fun ShutterButton(busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
+fun ShutterButton(
+    busy: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(64.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled && !busy, onClick = onClick)
