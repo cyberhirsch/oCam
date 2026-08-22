@@ -71,7 +71,7 @@ class CameraController(context: Context, private val listener: Listener) {
     private enum class State { PREVIEW, WAIT_FOCUS, WAIT_PRECAPTURE, WAIT_EXPOSURE, CAPTURING }
 
     /** One attempt at a set of output streams: null means "do not ask for this one". */
-    private data class StreamPlan(val jpeg: Size?, val raw: Size?)
+    private data class StreamPlan(val still: Size?, val raw: Size?)
 
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(CameraManager::class.java)
@@ -90,7 +90,8 @@ class CameraController(context: Context, private val listener: Listener) {
     private var session: CameraCaptureSession? = null
     private var previewBuilder: CaptureRequest.Builder? = null
     private var previewSurface: Surface? = null
-    private var jpegReader: ImageReader? = null
+    private var stillReader: ImageReader? = null
+    private var configuredStillFormat: Int? = null
     private var rawReader: ImageReader? = null
     private var openLens: Lens? = null
     private var streamPlans: List<StreamPlan> = emptyList()
@@ -144,6 +145,16 @@ class CameraController(context: Context, private val listener: Listener) {
             val previous = settings
             settings = newSettings
             if (previous.manualFocus != newSettings.manualFocus) meteringRegion = null
+
+            // JPEG and HEIC come out of different readers, so changing between them means
+            // building the session again rather than just changing a request key.
+            val wanted = newSettings.format.stillFormat
+            if (!capturing && wanted != null && configuredStillFormat != null &&
+                wanted != configuredStillFormat
+            ) {
+                reconfigureForFormat()
+                return@post
+            }
             if (!capturing) applyToPreview()
         }
     }
@@ -220,7 +231,10 @@ class CameraController(context: Context, private val listener: Listener) {
         try {
             val chars = manager.getCameraCharacteristics(lensId)
             val map = chars.streamMap() ?: throw IllegalStateException("no stream map")
-            val jpegSize = chars.jpegSize() ?: throw IllegalStateException("no JPEG output")
+            val stillFormat = settings.format.stillFormat ?: ImageFormat.JPEG
+            val stillSize = chars.stillSize(stillFormat)
+                ?: chars.jpegSize()
+                ?: throw IllegalStateException("no still output")
             val rawSize = chars.rawSize()
 
             characteristics = chars
@@ -236,8 +250,8 @@ class CameraController(context: Context, private val listener: Listener) {
             autoAfMode = pickAutoAfMode(chars)
             meteringRegion = null
             openLens = lens
-            previewSize = choosePreviewSize(map.getOutputSizes(SurfaceTexture::class.java), jpegSize)
-            streamPlans = buildStreamPlans(chars, jpegSize, rawSize)
+            previewSize = choosePreviewSize(map.getOutputSizes(SurfaceTexture::class.java), stillSize)
+            streamPlans = buildStreamPlans(chars, stillSize, rawSize)
             planIndex = 0
 
             texture.setDefaultBufferSize(previewSize.width, previewSize.height)
@@ -287,8 +301,8 @@ class CameraController(context: Context, private val listener: Listener) {
     }
 
     private fun closeReaders() {
-        runCatching { jpegReader?.close() }
-        jpegReader = null
+        runCatching { stillReader?.close() }
+        stillReader = null
         runCatching { rawReader?.close() }
         rawReader = null
     }
@@ -319,22 +333,23 @@ class CameraController(context: Context, private val listener: Listener) {
      */
     private fun buildStreamPlans(
         characteristics: CameraCharacteristics,
-        jpegMax: Size?,
+        stillMax: Size?,
         rawMax: Size?,
     ): List<StreamPlan> {
         val raw = rawMax?.takeIf {
             characteristics.hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW)
         }
-        val jpegSmall = characteristics.streamMap()
-            ?.getOutputSizes(ImageFormat.JPEG)
+        val stillFormat = settings.format.stillFormat ?: ImageFormat.JPEG
+        val stillSmall = characteristics.streamMap()
+            ?.getOutputSizes(stillFormat)
             ?.filter { it.width <= 1920 && it.height <= 1080 }
             ?.maxByOrNull { it.width.toLong() * it.height }
 
         return buildList {
-            if (jpegMax != null && raw != null) add(StreamPlan(jpegMax, raw))
+            if (stillMax != null && raw != null) add(StreamPlan(stillMax, raw))
             if (raw != null) add(StreamPlan(null, raw))
-            if (jpegMax != null) add(StreamPlan(jpegMax, null))
-            if (jpegSmall != null && jpegSmall != jpegMax) add(StreamPlan(jpegSmall, null))
+            if (stillMax != null) add(StreamPlan(stillMax, null))
+            if (stillSmall != null && stillSmall != stillMax) add(StreamPlan(stillSmall, null))
             // Last resort: a preview and nothing else, so the lens at least shows a picture.
             add(StreamPlan(null, null))
         }
@@ -350,9 +365,11 @@ class CameraController(context: Context, private val listener: Listener) {
         }
 
         closeReaders()
-        plan.jpeg?.let { size ->
-            jpegReader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2)
-                .apply { setOnImageAvailableListener(jpegAvailable, ioHandler) }
+        val stillFormat = settings.format.stillFormat ?: ImageFormat.JPEG
+        configuredStillFormat = stillFormat
+        plan.still?.let { size ->
+            stillReader = ImageReader.newInstance(size.width, size.height, stillFormat, 2)
+                .apply { setOnImageAvailableListener(stillAvailable, ioHandler) }
         }
         plan.raw?.let { size ->
             rawReader = ImageReader.newInstance(size.width, size.height, ImageFormat.RAW_SENSOR, 2)
@@ -361,7 +378,7 @@ class CameraController(context: Context, private val listener: Listener) {
 
         try {
             val outputs = mutableListOf(OutputConfiguration(preview))
-            jpegReader?.let { outputs += OutputConfiguration(it.surface) }
+            stillReader?.let { outputs += OutputConfiguration(it.surface) }
             rawReader?.let { outputs += OutputConfiguration(it.surface) }
             camera.createCaptureSession(
                 SessionConfiguration(
@@ -375,6 +392,19 @@ class CameraController(context: Context, private val listener: Listener) {
             Log.w(TAG, "Stream plan $planIndex could not be submitted", e)
             tryNextPlan()
         }
+    }
+
+    /** Rebuild the session because the still format changed under it. */
+    private fun reconfigureForFormat() {
+        val chars = characteristics ?: return
+        runCatching { session?.close() }
+        session = null
+        previewBuilder = null
+        val stillFormat = settings.format.stillFormat ?: ImageFormat.JPEG
+        val stillSize = chars.stillSize(stillFormat) ?: chars.jpegSize()
+        streamPlans = buildStreamPlans(chars, stillSize, chars.rawSize())
+        planIndex = 0
+        configureCurrentPlan()
     }
 
     private fun tryNextPlan() {
@@ -413,9 +443,11 @@ class CameraController(context: Context, private val listener: Listener) {
     /** What the lens actually granted, for the diagnostics report. */
     private fun describeStreams(): String = buildString {
         append("preview ${previewSize.width}x${previewSize.height}")
-        jpegReader?.let { append(", jpeg ${it.width}x${it.height}") }
+        stillReader?.let {
+            append(", ${if (settings.format.usesHeic) "heic" else "jpeg"} ${it.width}x${it.height}")
+        }
         rawReader?.let { append(", raw ${it.width}x${it.height}") }
-        if (jpegReader == null && rawReader == null) append(", no capture stream")
+        if (stillReader == null && rawReader == null) append(", no capture stream")
         append(" (plan ${planIndex + 1} of ${streamPlans.size})")
     }
 
@@ -609,7 +641,7 @@ class CameraController(context: Context, private val listener: Listener) {
         if (capturing) return
         val active = session ?: return
         val current = settings
-        val willWriteJpeg = current.format.writesJpeg && jpegReader != null
+        val willWriteJpeg = current.format.writesStill && stillReader != null
         val willWriteRaw = current.format.writesRaw && rawReader != null
         if (!willWriteJpeg && !willWriteRaw) {
             listener.onError(
@@ -682,7 +714,7 @@ class CameraController(context: Context, private val listener: Listener) {
         try {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
             applySettings(builder)
-            if (settings.format.writesJpeg) jpegReader?.let { builder.addTarget(it.surface) }
+            if (settings.format.writesStill) stillReader?.let { builder.addTarget(it.surface) }
             if (settings.format.writesRaw) rawReader?.let { builder.addTarget(it.surface) }
             builder.set(CaptureRequest.JPEG_ORIENTATION, pendingOrientation)
             builder.set(CaptureRequest.JPEG_QUALITY, 97.toByte())
@@ -758,18 +790,19 @@ class CameraController(context: Context, private val listener: Listener) {
         cameraHandler.post { finishCapture() }
     }
 
-    private val jpegAvailable = ImageReader.OnImageAvailableListener { reader ->
+    private val stillAvailable = ImageReader.OnImageAvailableListener { reader ->
         val image = reader.acquireNextImage() ?: return@OnImageAvailableListener
         val name = baseName
+        val heic = settings.format.usesHeic
         try {
             val buffer = image.planes[0].buffer
             val bytes = ByteArray(buffer.remaining())
             buffer.get(bytes)
             image.close()
-            onFileSaved(PhotoStore.saveJpeg(appContext, bytes, name))
+            onFileSaved(PhotoStore.saveStill(appContext, bytes, name, heic))
         } catch (t: Throwable) {
             runCatching { image.close() }
-            onSaveFailed("JPEG", t)
+            onSaveFailed(if (heic) "HEIC" else "JPEG", t)
         }
     }
 

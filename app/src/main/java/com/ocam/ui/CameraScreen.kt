@@ -1,6 +1,11 @@
 package com.ocam.ui
 
+import android.content.Context
+import android.content.Intent
 import android.graphics.SurfaceTexture
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -25,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -33,7 +39,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocam.CameraUiState
 import com.ocam.CameraViewModel
-import com.ocam.camera.CaptureFormat
 import androidx.compose.foundation.gestures.detectDragGestures
 import kotlin.math.roundToInt
 
@@ -65,6 +70,10 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
             }
         }
         Controls(state, viewModel)
+    }
+
+    if (state.settingsOpen) {
+        SettingsSheet(state = state, viewModel = viewModel, onClose = viewModel::closeSettings)
     }
 
     state.diagnostics?.let { report ->
@@ -249,7 +258,7 @@ private fun Controls(state: CameraUiState, viewModel: CameraViewModel) {
         // own - the button resets it to zero.
         val evRange = caps.exposureCompensationRange
         val evSpan = (evRange.upper - evRange.lower).coerceAtLeast(1)
-        ControlRow(
+        if (!settings.manualExposure && evSpan > 1) ControlRow(
             label = "EV",
             value = if (settings.manualExposure) "--"
             else formatExposureCompensation(
@@ -353,19 +362,16 @@ private fun LensRow(state: CameraUiState, viewModel: CameraViewModel) {
 
 @Composable
 private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel) {
+    val context = LocalContext.current
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-            Pill(
-                text = state.settings.format.label,
-                selected = state.settings.format.writesRaw,
-                onClick = {
-                    viewModel.setFormat(
-                        nextFormat(state.settings.format, state.capabilities.supportsRaw)
-                    )
-                },
+            FlatButton(
+                label = state.settings.format.label,
+                active = state.settings.format.writesRaw,
+                onClick = viewModel::cycleFormat,
             )
         }
         ShutterButton(
@@ -373,17 +379,46 @@ private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel) {
             enabled = state.selectedLensId != null,
             onClick = viewModel::capture,
         )
-        Box(modifier = Modifier.weight(1f))
+        Row(
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FlatButton(
+                label = "FILES",
+                active = false,
+                onClick = { openPhotoFolder(context) },
+            )
+            FlatButton(
+                label = "SET",
+                active = state.settingsOpen,
+                onClick = viewModel::openSettings,
+            )
+        }
     }
 }
 
-private fun nextFormat(current: CaptureFormat, rawAvailable: Boolean): CaptureFormat {
-    if (!rawAvailable) return CaptureFormat.JPEG
-    return when (current) {
-        CaptureFormat.JPEG -> CaptureFormat.RAW
-        CaptureFormat.RAW -> CaptureFormat.RAW_JPEG
-        CaptureFormat.RAW_JPEG -> CaptureFormat.JPEG
+/**
+ * Open the folder the photos went into. The documents provider knows it by path; where no file
+ * browser answers that, fall back to whatever handles images.
+ */
+private fun openPhotoFolder(context: Context) {
+    val folder = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(
+            DocumentsContract.buildDocumentUri(
+                "com.android.externalstorage.documents",
+                "primary:${Environment.DIRECTORY_PICTURES}/oCam",
+            ),
+            DocumentsContract.Document.MIME_TYPE_DIR,
+        )
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
+    val gallery = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { context.startActivity(folder) }
+        .recoverCatching { context.startActivity(gallery) }
 }
 
 // The sliders show what the camera is doing even while it is doing it itself, so switching to

@@ -81,6 +81,7 @@ data class LensCapabilities(
     val supportsManualSensor: Boolean,
     val supportsManualWhiteBalance: Boolean,
     val supportsRaw: Boolean,
+    val supportsHeic: Boolean,
     val hasAutoFocus: Boolean,
 ) {
     val supportsManualIso: Boolean get() = supportsManualSensor && isoRange != null
@@ -99,6 +100,7 @@ data class LensCapabilities(
             supportsManualSensor = false,
             supportsManualWhiteBalance = false,
             supportsRaw = false,
+            supportsHeic = false,
             hasAutoFocus = false,
         )
     }
@@ -126,6 +128,7 @@ fun CameraCharacteristics.capabilities(): LensCapabilities {
         ),
         supportsRaw = hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW) &&
             rawSize() != null,
+        supportsHeic = supportsHeic(),
         hasAutoFocus = afModes.any { it != CameraMetadata.CONTROL_AF_MODE_OFF },
     )
 }
@@ -136,8 +139,14 @@ fun CameraCharacteristics.streamMap(): StreamConfigurationMap? =
 fun CameraCharacteristics.rawSize(): Size? =
     streamMap()?.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height }
 
-fun CameraCharacteristics.jpegSize(): Size? =
-    streamMap()?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width.toLong() * it.height }
+fun CameraCharacteristics.jpegSize(): Size? = stillSize(ImageFormat.JPEG)
+
+fun CameraCharacteristics.stillSize(format: Int): Size? =
+    runCatching { streamMap()?.getOutputSizes(format) }.getOrNull()
+        ?.maxByOrNull { it.width.toLong() * it.height }
+
+/** Whether the camera itself can encode HEIC; not every device's firmware offers it. */
+fun CameraCharacteristics.supportsHeic(): Boolean = stillSize(ImageFormat.HEIC) != null
 
 /**
  * Every openable camera on the device, main lenses first and then the physical sub-cameras that

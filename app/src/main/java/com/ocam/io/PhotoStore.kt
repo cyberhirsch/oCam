@@ -25,9 +25,14 @@ object PhotoStore {
         return "IMG_$stamp"
     }
 
-    fun saveJpeg(context: Context, bytes: ByteArray, baseName: String): String {
-        val name = "$baseName.jpg"
-        write(context, name, "image/jpeg") { it.write(bytes) }
+    /**
+     * The rendered image. HEIC is roughly half the size of a JPEG at the same quality and carries
+     * ten bits per channel instead of eight, which is where the headroom in skies and skin comes
+     * from; the camera hands both over already encoded.
+     */
+    fun saveStill(context: Context, bytes: ByteArray, baseName: String, heic: Boolean): String {
+        val name = baseName + if (heic) ".heic" else ".jpg"
+        write(context, name, if (heic) "image/heic" else "image/jpeg") { it.write(bytes) }
         return name
     }
 

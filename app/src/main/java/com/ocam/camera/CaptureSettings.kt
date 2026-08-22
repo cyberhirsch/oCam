@@ -1,14 +1,31 @@
 package com.ocam.camera
 
+import android.graphics.ImageFormat
 import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.RggbChannelVector
 import kotlin.math.ln
 import kotlin.math.pow
 
-enum class CaptureFormat(val label: String, val writesJpeg: Boolean, val writesRaw: Boolean) {
-    JPEG("JPEG", true, false),
-    RAW("RAW", false, true),
-    RAW_JPEG("RAW+JPEG", true, true),
+/**
+ * What a press of the shutter writes. The still image is one format or none - JPEG and HEIC are
+ * alternatives, not companions - and RAW rides alongside it.
+ */
+enum class CaptureFormat(
+    val label: String,
+    /** An [android.graphics.ImageFormat] constant, or null when no rendered image is wanted. */
+    val stillFormat: Int?,
+    val writesRaw: Boolean,
+) {
+    JPEG("JPEG", ImageFormat.JPEG, false),
+    HEIC("HEIC", ImageFormat.HEIC, false),
+    RAW("RAW", null, true),
+    RAW_JPEG("RAW+JPEG", ImageFormat.JPEG, true),
+    RAW_HEIC("RAW+HEIC", ImageFormat.HEIC, true),
+    ;
+
+    val writesStill: Boolean get() = stillFormat != null
+    val usesHeic: Boolean get() = stillFormat == ImageFormat.HEIC
+    val usesJpeg: Boolean get() = stillFormat == ImageFormat.JPEG
 }
 
 /**

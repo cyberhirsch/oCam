@@ -6,7 +6,9 @@ import android.hardware.camera2.CameraManager
 import android.util.Size
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ocam.camera.AppSettings
 import com.ocam.camera.CameraController
+import com.ocam.camera.formatChoices
 import com.ocam.camera.Diagnostics
 import com.ocam.camera.LensMemory
 import com.ocam.camera.CaptureFormat
@@ -50,7 +52,16 @@ data class CameraUiState(
     val troubled: Set<String> = emptySet(),
     /** While true, dragging on the frame sets white balance instead of focusing. */
     val whiteBalanceAdjust: Boolean = false,
+    /** The file types the user allows at all, set in settings. */
+    val saveJpeg: Boolean = true,
+    val saveHeic: Boolean = false,
+    val saveRaw: Boolean = true,
+    val settingsOpen: Boolean = false,
 ) {
+    /** What the shutter can be set to here: what is allowed, filtered by what this lens can do. */
+    val formatChoices: List<CaptureFormat>
+        get() = formatChoices(saveJpeg, saveHeic, saveRaw, capabilities)
+
     val selectedLens: Lens? get() = lenses.firstOrNull { it.id == selectedLensId }
 
     /** True when everything this lens *can* be told manually is set manually. */
@@ -74,6 +85,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     private var openedLensId: String? = null
     private var statusJob: Job? = null
     private val memory = LensMemory(application)
+    private val appSettings = AppSettings(application)
     private var armedLensId: String? = null
 
     init {
@@ -83,6 +95,14 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         memory.takeUnfinishedOpen()?.let { crashed ->
             memory.markTroubled(crashed)
             showError("Lens $crashed did not come back last time - handle with care")
+        }
+
+        _state.update {
+            it.copy(
+                saveJpeg = appSettings.saveJpeg,
+                saveHeic = appSettings.saveHeic,
+                saveRaw = appSettings.saveRaw,
+            )
         }
 
         viewModelScope.launch {
@@ -169,7 +189,42 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         else -> null
     }
 
-    fun setFormat(format: CaptureFormat) = updateSettings { it.copy(format = format) }
+    /** Step to the next combination this lens and these settings allow. */
+    fun cycleFormat() {
+        val choices = _state.value.formatChoices
+        val next = choices[(choices.indexOf(_state.value.settings.format) + 1) % choices.size]
+        updateSettings { it.copy(format = next) }
+    }
+
+    fun openSettings() = _state.update { it.copy(settingsOpen = true) }
+
+    fun closeSettings() = _state.update { it.copy(settingsOpen = false) }
+
+    fun setSaveJpeg(enabled: Boolean) {
+        appSettings.saveJpeg = enabled
+        _state.update { it.copy(saveJpeg = enabled) }
+        ensureFormatAllowed()
+    }
+
+    fun setSaveHeic(enabled: Boolean) {
+        appSettings.saveHeic = enabled
+        _state.update { it.copy(saveHeic = enabled) }
+        ensureFormatAllowed()
+    }
+
+    fun setSaveRaw(enabled: Boolean) {
+        appSettings.saveRaw = enabled
+        _state.update { it.copy(saveRaw = enabled) }
+        ensureFormatAllowed()
+    }
+
+    /** Switching a file type off must not leave the shutter set to something it may not write. */
+    private fun ensureFormatAllowed() {
+        val choices = _state.value.formatChoices
+        if (_state.value.settings.format !in choices) {
+            updateSettings { it.copy(format = choices.first()) }
+        }
+    }
 
     fun setDeviceRotation(degrees: Int) {
         if (_state.value.settings.deviceRotation == degrees) return
@@ -470,10 +525,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         settings: CaptureSettings,
         capabilities: LensCapabilities,
     ): CaptureSettings {
-        val format = when {
-            settings.format.writesRaw && !capabilities.supportsRaw -> CaptureFormat.JPEG
-            else -> settings.format
-        }
+        val allowed = formatChoices(
+            _state.value.saveJpeg,
+            _state.value.saveHeic,
+            _state.value.saveRaw,
+            capabilities,
+        )
+        val format = if (settings.format in allowed) settings.format else allowed.first()
         return settings.copy(
             manualExposure = settings.manualExposure && capabilities.supportsManualSensor,
             iso = capabilities.isoRange?.clamp(settings.iso) ?: settings.iso,
