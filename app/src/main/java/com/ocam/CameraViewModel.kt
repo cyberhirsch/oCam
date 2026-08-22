@@ -2,10 +2,12 @@ package com.ocam
 
 import android.app.Application
 import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraManager
 import android.util.Size
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ocam.camera.CameraController
+import com.ocam.camera.Diagnostics
 import com.ocam.camera.CaptureFormat
 import com.ocam.camera.CaptureSettings
 import com.ocam.camera.Lens
@@ -34,6 +36,10 @@ data class CameraUiState(
     val busy: Boolean = false,
     val status: String? = null,
     val error: String? = null,
+    /** What the open lens actually granted, for the diagnostics report. */
+    val streamSummary: String = "",
+    /** Non-null while the diagnostics sheet is open. */
+    val diagnostics: String? = null,
 ) {
     val selectedLens: Lens? get() = lenses.firstOrNull { it.id == selectedLensId }
 
@@ -225,6 +231,53 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     /** Forget the tap-to-focus point and go back to continuous autofocus. */
     fun resetFocusPoint() = controller.clearMetering()
 
+    /**
+     * Collect what this device reports about its cameras. Probing every id takes a moment, so it
+     * happens off the main thread and the sheet fills in when it is ready.
+     */
+    fun openDiagnostics() {
+        _state.update { it.copy(diagnostics = "Collecting…") }
+        viewModelScope.launch {
+            val text = withContext(Dispatchers.Default) { buildDiagnostics() }
+            _state.update { if (it.diagnostics != null) it.copy(diagnostics = text) else it }
+        }
+    }
+
+    fun closeDiagnostics() {
+        _state.update { it.copy(diagnostics = null) }
+    }
+
+    /** Copying closes the sheet, so there is visible proof the button did something. */
+    fun copiedDiagnostics() {
+        closeDiagnostics()
+        onStatus("Report copied to clipboard")
+    }
+
+    private fun buildDiagnostics(): String {
+        val current = _state.value
+        val application = getApplication<Application>()
+        val manager = application.getSystemService(CameraManager::class.java)
+        val openState = buildString {
+            val lens = current.selectedLens
+            if (lens == null) {
+                appendLine("OPEN: none")
+            } else {
+                appendLine("OPEN: id ${lens.id} (${lens.facingLabel} ${lens.zoomLabel}, ${lens.origin})")
+                appendLine("  ${current.streamSummary}")
+                appendLine(
+                    "  raw=${current.capabilities.supportsRaw}" +
+                        " sensor=${current.capabilities.supportsManualSensor}" +
+                        " focus=${current.capabilities.supportsManualFocus}" +
+                        " wb=${current.capabilities.supportsManualWhiteBalance}"
+                )
+            }
+            appendLine("OFFERED: ${current.lenses.size} lenses - " +
+                current.lenses.joinToString(", ") { "${it.id}:${it.facingLabel}" })
+            current.error?.let { appendLine("LAST ERROR: $it") }
+        }
+        return Diagnostics.report(application, manager, openState.trimEnd())
+    }
+
     private fun updateSettings(transform: (CaptureSettings) -> CaptureSettings) {
         val updated = transform(_state.value.settings)
         _state.update { it.copy(settings = updated) }
@@ -244,12 +297,18 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
 
     // region controller callbacks
 
-    override fun onLensOpened(lens: Lens, capabilities: LensCapabilities, previewSize: Size) {
+    override fun onLensOpened(
+        lens: Lens,
+        capabilities: LensCapabilities,
+        previewSize: Size,
+        streams: String,
+    ) {
         val settings = clampToCapabilities(_state.value.settings, capabilities)
         _state.update {
             it.copy(
                 capabilities = capabilities,
                 settings = settings,
+                streamSummary = streams,
                 // The preview arrives rotated for the display, so the portrait aspect is inverted.
                 previewAspect = previewSize.height.toFloat() / previewSize.width.toFloat(),
                 liveIso = null,

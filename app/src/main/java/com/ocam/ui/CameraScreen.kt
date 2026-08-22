@@ -64,6 +64,14 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
         }
         Controls(state, viewModel)
     }
+
+    state.diagnostics?.let { report ->
+        DiagnosticsSheet(
+            text = report,
+            onCopy = { viewModel.copiedDiagnostics() },
+            onClose = viewModel::closeDiagnostics,
+        )
+    }
 }
 
 @Composable
@@ -129,7 +137,15 @@ private fun TopStrip(state: CameraUiState, viewModel: CameraViewModel) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                // Hidden on purpose: a long press is out of the way in normal use, and the
+                // report is only ever needed when something has gone wrong.
+                .pointerInput(Unit) {
+                    detectTapGestures(onLongPress = { viewModel.openDiagnostics() })
+                },
+        ) {
             Text(
                 text = liveReadout(state),
                 color = Color.White,

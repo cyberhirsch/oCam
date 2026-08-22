@@ -56,6 +56,14 @@ show up in the gallery immediately.
 **A live readout** across the top shows what the camera actually did - the ISO, shutter,
 aperture and focus distance from the capture results, not just what was requested.
 
+### When a lens misbehaves
+
+Long press the readout at the top of the screen. The app collects what the device
+reports about every camera it can find - including the ids it probed and rejected,
+each one's hardware level and capabilities, and which stream combination the open
+lens actually granted - and offers it as text to copy. Paste that into a bug report;
+it is the difference between a lens that is missing and a lens that refused.
+
 ## Requirements
 
 - Android 10 (API 29) or newer

@@ -51,7 +51,12 @@ private val OPEN_RETRY_TOKEN = Any()
 class CameraController(context: Context, private val listener: Listener) {
 
     interface Listener {
-        fun onLensOpened(lens: Lens, capabilities: LensCapabilities, previewSize: Size)
+        fun onLensOpened(
+            lens: Lens,
+            capabilities: LensCapabilities,
+            previewSize: Size,
+            streams: String,
+        )
         fun onLiveValues(iso: Int?, exposureTimeNs: Long?, focusDiopters: Float?, aperture: Float?)
         fun onCaptureBusy(busy: Boolean)
         fun onStatus(message: String)
@@ -350,6 +355,7 @@ class CameraController(context: Context, private val listener: Listener) {
                     lens,
                     capabilities.copy(supportsRaw = rawReader != null),
                     previewSize,
+                    describeStreams(),
                 )
             }
             startPreview()
@@ -360,6 +366,15 @@ class CameraController(context: Context, private val listener: Listener) {
             runCatching { configured.close() }
             tryNextPlan()
         }
+    }
+
+    /** What the lens actually granted, for the diagnostics report. */
+    private fun describeStreams(): String = buildString {
+        append("preview ${previewSize.width}x${previewSize.height}")
+        jpegReader?.let { append(", jpeg ${it.width}x${it.height}") }
+        rawReader?.let { append(", raw ${it.width}x${it.height}") }
+        if (jpegReader == null && rawReader == null) append(", no capture stream")
+        append(" (plan ${planIndex + 1} of ${streamPlans.size})")
     }
 
     private fun startPreview() {
