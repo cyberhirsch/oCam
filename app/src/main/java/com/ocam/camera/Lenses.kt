@@ -78,10 +78,16 @@ data class LensCapabilities(
     val apertures: List<Float>,
     val supportsManualSensor: Boolean,
     val supportsManualWhiteBalance: Boolean,
+    /** The CONTROL_AWB_MODE values this camera accepts - its own fixed illuminants. */
+    val awbModes: Set<Int>,
     val supportsRaw: Boolean,
     val supportsHeic: Boolean,
     val hasAutoFocus: Boolean,
 ) {
+    /** The named illuminants this camera offers, in the order they are shown. */
+    val whiteBalancePresets: List<WhiteBalance>
+        get() = WhiteBalance.entries.filter { it != WhiteBalance.CUSTOM && it.awbMode in awbModes }
+
     val supportsManualIso: Boolean get() = supportsManualSensor && isoRange != null
     val supportsManualShutter: Boolean get() = supportsManualSensor && exposureTimeRange != null
     val supportsManualFocus: Boolean get() = minFocusDistance > 0f
@@ -95,6 +101,7 @@ data class LensCapabilities(
             apertures = emptyList(),
             supportsManualSensor = false,
             supportsManualWhiteBalance = false,
+            awbModes = emptySet(),
             supportsRaw = false,
             supportsHeic = false,
             hasAutoFocus = false,
@@ -118,6 +125,8 @@ fun CameraCharacteristics.capabilities(): LensCapabilities {
         supportsManualWhiteBalance = hasCapability(
             CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING
         ),
+        awbModes = get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)
+            ?.toList()?.toSet().orEmpty(),
         supportsRaw = hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW) &&
             rawSize() != null,
         supportsHeic = supportsHeic(),
@@ -152,7 +161,7 @@ fun enumerateLenses(manager: CameraManager): List<Lens> {
         if (found.containsKey(id)) return
         val characteristics =
             runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return
-        if (!characteristics.isUsable()) return
+        if (characteristics.skipReason(origin) != null) return
         found[id] = characteristics to origin
     }
 
@@ -213,23 +222,50 @@ fun enumerateLenses(manager: CameraManager): List<Lens> {
 }
 
 /**
- * Whether this camera should be offered at all. The exclusions are the ones the platform actually
- * documents - a camera reserved for system apps, or one that produces no ordinary image - because
- * anything looser risks hiding a real lens, and opening one of these can wedge the camera service
- * until the phone is rebooted.
+ * Why this camera is not offered, or null when it is.
+ *
+ * How hard the test is depends on how the camera was found. One the system advertises is one the
+ * system means for apps, so it is taken at its word unless it says outright that it is something
+ * else. One found only by probing ids has made no such claim, and on these phones that is where
+ * the depth and assist sensors live - the ones that take the camera service down with them - so
+ * it has to look like a photo camera before it is offered: a real focal length, no depth or
+ * motion-tracking role, and an image big enough to be a picture.
  */
-private fun CameraCharacteristics.isUsable(): Boolean {
+fun CameraCharacteristics.skipReason(origin: LensOrigin): String? {
     if (!hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE)) {
-        return false
+        return "not backward compatible"
     }
-    if (streamMap() == null) return false
+    if (streamMap() == null) return "no stream map"
     // Reserved for privileged apps: a normal app is not allowed to open it, and some firmware
     // handles the refusal badly.
-    if (hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_SYSTEM_CAMERA)) return false
+    if (hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_SYSTEM_CAMERA)) {
+        return "reserved for system apps"
+    }
     // An infrared sensor is not a photo camera, whatever else it claims.
-    val filter = get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-    if (filter == CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_NIR) return false
-    return true
+    if (get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) ==
+        CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_NIR
+    ) {
+        return "infrared sensor"
+    }
+    // Nothing that cannot produce a still image is a camera for this app's purposes.
+    val jpeg = jpegSize() ?: return "no still image output"
+
+    if (origin != LensOrigin.HIDDEN) return null
+
+    if (hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT)) {
+        return "hidden and reports itself as a depth sensor"
+    }
+    if (hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MOTION_TRACKING)) {
+        return "hidden and reports itself as a motion tracking sensor"
+    }
+    if (get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.isNotEmpty() != true) {
+        return "hidden and reports no focal length"
+    }
+    // Even a phone's macro camera is a couple of megapixels; an assist sensor is a fraction of one.
+    if (jpeg.width.toLong() * jpeg.height < 1_500_000L) {
+        return "hidden and its largest image is only ${jpeg.width}x${jpeg.height}"
+    }
+    return null
 }
 
 /**
@@ -243,8 +279,7 @@ private fun CameraCharacteristics.helperSensorWarning(): String? {
     if (hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MOTION_TRACKING)) {
         return "reports itself as a motion tracking sensor"
     }
-    val jpeg = jpegSize()
-    if (jpeg == null) return "offers no still image output"
+    val jpeg = jpegSize() ?: return null
     if (jpeg.width.toLong() * jpeg.height < 1_000_000L) {
         return "largest image is only ${jpeg.width}x${jpeg.height}"
     }

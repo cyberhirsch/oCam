@@ -38,15 +38,20 @@ object Diagnostics {
             val characteristics = runCatching { manager.getCameraCharacteristics(id) }.getOrNull()
                 ?: continue
             val origin = when {
-                id in listed -> "listed"
-                id in physical -> "sub"
-                else -> "hidden"
+                id in listed -> LensOrigin.LISTED
+                id in physical -> LensOrigin.PHYSICAL
+                else -> LensOrigin.HIDDEN
             }
-            appendLine("  id $id  [$origin]  ${describe(characteristics)}")
+            appendLine(
+                "  id $id  [${origin.name.lowercase()}]  ${describe(characteristics, origin)}"
+            )
         }
     }
 
-    private fun describe(characteristics: CameraCharacteristics): String {
+    private fun describe(
+        characteristics: CameraCharacteristics,
+        origin: LensOrigin,
+    ): String {
         val facing = when (characteristics.get(CameraCharacteristics.LENS_FACING)) {
             CameraCharacteristics.LENS_FACING_BACK -> "back"
             CameraCharacteristics.LENS_FACING_FRONT -> "front"
@@ -70,13 +75,8 @@ object Diagnostics {
         val previews = characteristics.streamMap()
             ?.getOutputSizes(ImageFormat.JPEG)?.size ?: 0
 
-        val verdict = when {
-            !characteristics.hasCapability(
-                CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE
-            ) -> "SKIPPED: not backward compatible"
-            characteristics.streamMap() == null -> "SKIPPED: no stream map"
-            else -> "offered"
-        }
+        // The same rule the lens list uses, so the report can never disagree with the app.
+        val verdict = characteristics.skipReason(origin)?.let { "SKIPPED: $it" } ?: "offered"
 
         return "$facing ${focal}mm $level jpeg=$jpeg raw=$raw sizes=$previews\n" +
             "        caps: $caps\n" +

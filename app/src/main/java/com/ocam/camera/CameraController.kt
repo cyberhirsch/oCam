@@ -16,6 +16,7 @@ import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.Image
 import android.media.ImageReader
@@ -47,6 +48,9 @@ private val OPEN_RETRY_TOKEN = Any()
 /** How long to let autofocus hunt when racking focus by tap. */
 private const val RACK_TIMEOUT_MS = 2_500L
 
+/** How many frames to give the meter to settle before taking its reading anyway. */
+private const val METERING_FRAME_LIMIT = 60
+
 /**
  * Owns the Camera2 device, session and capture pipeline. Every camera call happens on a single
  * background thread; image encoding happens on a second one. Nothing here knows about Compose.
@@ -61,6 +65,12 @@ class CameraController(context: Context, private val listener: Listener) {
             streams: String,
         )
         fun onLiveValues(iso: Int?, exposureTimeNs: Long?, focusDiopters: Float?, aperture: Float?)
+        /**
+         * The exposure the camera's own meter arrived at on the first frames. It is read once,
+         * to start the manual sliders from the light in the room instead of from a guess; from
+         * then on nothing moves them but the user.
+         */
+        fun onMeteredExposure(iso: Int, exposureTimeNs: Long)
         /** Autofocus found a subject while in manual focus; this is the distance it settled on. */
         fun onFocusRacked(diopters: Float)
         fun onCaptureBusy(busy: Boolean)
@@ -105,7 +115,15 @@ class CameraController(context: Context, private val listener: Listener) {
     private var maxAeRegions = 0
     private var shadingMapAvailable = false
     private var rackingFocus = false
+    /** Whether the search now running was asked for by a tap, and so worth reporting on. */
+    private var rackAnnounces = false
     private var meteringRegion: MeteringRectangle? = null
+    /** True until the meter has been read once; see [Listener.onMeteredExposure]. */
+    private var metering = true
+    private var meteringFrames = 0
+    /** The last channel gains the camera reported, and the illuminant it reported them for. */
+    private var reportedGains: RggbChannelVector? = null
+    private var reportedGainsKelvin = WhiteBalance.DAYLIGHT.kelvin
     private var state = State.PREVIEW
     private var lastPublishMs = 0L
     private var pendingOrientation = 0
@@ -142,9 +160,7 @@ class CameraController(context: Context, private val listener: Listener) {
 
     fun updateSettings(newSettings: CaptureSettings) {
         cameraHandler.post {
-            val previous = settings
             settings = newSettings
-            if (previous.manualFocus != newSettings.manualFocus) meteringRegion = null
 
             // JPEG and HEIC come out of different readers, so changing between them means
             // building the session again rather than just changing a request key.
@@ -163,14 +179,8 @@ class CameraController(context: Context, private val listener: Listener) {
         cameraHandler.post { startCapture() }
     }
 
-    /** Point AF/AE at a spot in the preview, given in 0..1 view coordinates. */
-    fun focusAt(normalizedX: Float, normalizedY: Float) {
-        cameraHandler.post { setMeteringPoint(normalizedX, normalizedY) }
-    }
-
     /**
-     * Pull focus to a spot while focus is manual: borrow autofocus for one shot, then keep the
-     * distance it found. Manual focus cannot search by itself, but it can be told where to land.
+     * Pull focus to a spot: borrow autofocus for one shot, then keep the distance it found.
      */
     fun rackFocusAt(normalizedX: Float, normalizedY: Float) {
         cameraHandler.post {
@@ -179,32 +189,34 @@ class CameraController(context: Context, private val listener: Listener) {
                 return@post
             }
             setMeteringPoint(normalizedX, normalizedY)
-            rackingFocus = true
-            applyToPreview()
-
-            val builder = previewBuilder ?: return@post
-            val active = session ?: return@post
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-            runCatching { active.capture(builder.build(), previewCallback, cameraHandler) }
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
-            cameraHandler.postDelayed(rackTimeout, RACK_TIMEOUT_MS)
+            startRack(byTap = true)
         }
+    }
+
+    /**
+     * Let the lens search once and keep the distance it lands on. This is the only thing that
+     * moves focus other than the slider: manual focus cannot search by itself, but it can be
+     * told where to look - by a tap, or by the one look taken when a lens opens.
+     */
+    private fun startRack(byTap: Boolean) {
+        rackingFocus = true
+        rackAnnounces = byTap
+        applyToPreview()
+
+        val builder = previewBuilder ?: return
+        val active = session ?: return
+        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+        runCatching { active.capture(builder.build(), previewCallback, cameraHandler) }
+        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
+        cameraHandler.removeCallbacks(rackTimeout)
+        cameraHandler.postDelayed(rackTimeout, RACK_TIMEOUT_MS)
     }
 
     private val rackTimeout = Runnable {
         if (rackingFocus) {
             rackingFocus = false
             applyToPreview()
-            listener.onStatus("Focus did not find anything there")
-        }
-    }
-
-    /** Drop the tap-to-focus point and go back to continuous autofocus. */
-    fun clearMetering() {
-        cameraHandler.post {
-            if (meteringRegion == null) return@post
-            meteringRegion = null
-            applyToPreview()
+            if (rackAnnounces) listener.onStatus("Focus did not find anything there")
         }
     }
 
@@ -462,6 +474,12 @@ class CameraController(context: Context, private val listener: Listener) {
             applySettings(builder)
             state = State.PREVIEW
             active.setRepeatingRequest(builder.build(), previewCallback, cameraHandler)
+
+            // One look as the lens opens, so it holds the distance to what is in front of it
+            // rather than to infinity. Nothing after this moves focus on its own.
+            if (capabilities.supportsManualFocus && capabilities.hasAutoFocus) {
+                startRack(byTap = false)
+            }
         } catch (e: Exception) {
             listener.onError("Preview failed: ${e.javaClass.simpleName}")
         }
@@ -484,7 +502,10 @@ class CameraController(context: Context, private val listener: Listener) {
         val caps = capabilities
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
 
-        if (current.manualExposure && caps.supportsManualSensor) {
+        // Exposure is set, not chosen. The exception is the opening frames, where the meter runs
+        // once so the sliders start from the light in the room, and a lens that cannot be told
+        // its sensitivity at all, where there is nothing else to do.
+        if (caps.supportsManualSensor && !metering) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
             caps.isoRange?.let { builder.set(CaptureRequest.SENSOR_SENSITIVITY, it.clamp(current.iso)) }
             caps.exposureTimeRange?.let { range ->
@@ -494,33 +515,30 @@ class CameraController(context: Context, private val listener: Listener) {
             }
         } else {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-            meteringRegion?.takeIf { maxAeRegions > 0 }?.let {
-                builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(it))
-            }
         }
 
+        // Focus likewise: the only time the lens searches is when it has been told to, by a tap
+        // or by the one look it takes when a lens opens, and the distance it lands on is kept.
         if (rackingFocus && caps.hasAutoFocus) {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
             meteringRegion?.takeIf { maxAfRegions > 0 }?.let {
                 builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(it))
             }
-        } else if (current.manualFocus && caps.supportsManualFocus) {
+        } else if (caps.supportsManualFocus) {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
             builder.set(
                 CaptureRequest.LENS_FOCUS_DISTANCE,
                 current.focusDiopters.coerceIn(0f, caps.minFocusDistance),
             )
         } else if (caps.hasAutoFocus) {
-            val region = meteringRegion
-            if (region != null && maxAfRegions > 0) {
-                builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
-                builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
-            } else {
-                builder.set(CaptureRequest.CONTROL_AF_MODE, autoAfMode)
-            }
+            // A lens that cannot be given a distance can only be asked to find one.
+            builder.set(CaptureRequest.CONTROL_AF_MODE, autoAfMode)
         }
 
-        if (current.manualWhiteBalance && caps.supportsManualWhiteBalance) {
+        val gains = reportedGains
+        if (current.whiteBalance == WhiteBalance.CUSTOM &&
+            caps.supportsManualWhiteBalance && gains != null
+        ) {
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
             builder.set(
                 CaptureRequest.COLOR_CORRECTION_MODE,
@@ -529,10 +547,15 @@ class CameraController(context: Context, private val listener: Listener) {
             builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, IDENTITY_COLOR_TRANSFORM)
             builder.set(
                 CaptureRequest.COLOR_CORRECTION_GAINS,
-                kelvinToGains(current.kelvin, current.tint),
+                shiftedGains(gains, reportedGainsKelvin, current.kelvin, current.tint),
             )
         } else {
-            builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+            // The camera's own fixed illuminant, which is calibrated for this sensor. Naming a
+            // temperature and converting it to gains here is what made tungsten and daylight green.
+            val preset = current.whiteBalance.takeIf { it != WhiteBalance.CUSTOM }
+                ?: caps.whiteBalancePresets.firstOrNull()
+                ?: WhiteBalance.DAYLIGHT
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, preset.awbMode)
         }
 
         if (caps.supportsManualAperture) {
@@ -565,6 +588,7 @@ class CameraController(context: Context, private val listener: Listener) {
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
+            observe(result)
             publishLiveValues(result)
             advance(result)
         }
@@ -594,7 +618,8 @@ class CameraController(context: Context, private val listener: Listener) {
                     af == CameraMetadata.CONTROL_AF_STATE_INACTIVE
                 if (settled) {
                     val ae = result.get(CaptureResult.CONTROL_AE_STATE)
-                    if (settings.manualExposure || ae == null ||
+                    val exposureIsSet = capabilities.supportsManualSensor && !metering
+                    if (exposureIsSet || ae == null ||
                         ae == CameraMetadata.CONTROL_AE_STATE_CONVERGED
                     ) {
                         captureStill()
@@ -620,6 +645,42 @@ class CameraController(context: Context, private val listener: Listener) {
                 if (ae == null || ae != CameraMetadata.CONTROL_AE_STATE_PRECAPTURE) captureStill()
             }
         }
+    }
+
+    /**
+     * What the camera says about itself, taken once each.
+     *
+     * The exposure is read on the opening frames so the manual sliders start from the light in
+     * the room; after that the meter is off and nothing moves them but the user. The channel
+     * gains are read whenever a named illuminant is selected, because those gains are the
+     * sensor's own balance for that light - and a custom temperature is a shift away from them
+     * rather than a number invented here.
+     */
+    private fun observe(result: CaptureResult) {
+        val preset = settings.whiteBalance
+        if (preset != WhiteBalance.CUSTOM) {
+            result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { gains ->
+                reportedGains = gains
+                reportedGainsKelvin = preset.kelvin
+            }
+        }
+
+        if (!metering) return
+        // Wait for the meter to settle before taking its word for it: the opening frames are
+        // whatever the camera started at, not what it decided. If it never converges, take what
+        // it has rather than metering forever.
+        meteringFrames++
+        val ae = result.get(CaptureResult.CONTROL_AE_STATE)
+        val settled = ae == null ||
+            ae == CameraMetadata.CONTROL_AE_STATE_CONVERGED ||
+            ae == CameraMetadata.CONTROL_AE_STATE_FLASH_REQUIRED ||
+            meteringFrames > METERING_FRAME_LIMIT
+        if (!settled) return
+
+        val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return
+        val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return
+        metering = false
+        listener.onMeteredExposure(iso, exposure)
     }
 
     private fun publishLiveValues(result: CaptureResult) {
@@ -659,10 +720,11 @@ class CameraController(context: Context, private val listener: Listener) {
         cameraHandler.postDelayed(convergenceTimeout, CONVERGENCE_TIMEOUT_MS)
         cameraHandler.postDelayed(saveTimeout, SAVE_TIMEOUT_MS)
 
-        val autoFocus = !current.manualFocus && capabilities.hasAutoFocus
+        // Nothing to converge: the exposure and the focus distance are already what they will
+        // be. Only a lens that cannot be told either has to be waited for.
         when {
-            autoFocus -> lockFocus(active)
-            !current.manualExposure -> runPrecapture()
+            !capabilities.supportsManualFocus && capabilities.hasAutoFocus -> lockFocus(active)
+            !capabilities.supportsManualSensor || metering -> runPrecapture()
             else -> captureStill()
         }
     }
@@ -883,13 +945,6 @@ class CameraController(context: Context, private val listener: Listener) {
         meteringRegion = MeteringRectangle(rect, MeteringRectangle.METERING_WEIGHT_MAX - 1)
         applyToPreview()
 
-        if (!settings.manualFocus && capabilities.hasAutoFocus && maxAfRegions > 0) {
-            val builder = previewBuilder ?: return
-            val active = session ?: return
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-            runCatching { active.capture(builder.build(), previewCallback, cameraHandler) }
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
-        }
     }
 
     /** The preview is the sensor image rotated by [sensorOrientation]; undo that rotation. */

@@ -15,6 +15,7 @@ import com.ocam.camera.CaptureFormat
 import com.ocam.camera.CaptureSettings
 import com.ocam.camera.Lens
 import com.ocam.camera.LensCapabilities
+import com.ocam.camera.WhiteBalance
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -58,21 +59,12 @@ data class CameraUiState(
     val saveHeic: Boolean = false,
     val saveRaw: Boolean = true,
     val settingsOpen: Boolean = false,
-    /** Stripes over what is about to clip. */
-    val zebra: Boolean = false,
 ) {
     /** What the shutter can be set to here: what is allowed, filtered by what this lens can do. */
     val formatChoices: List<CaptureFormat>
         get() = formatChoices(saveJpeg, saveHeic, saveRaw, capabilities)
 
     val selectedLens: Lens? get() = lenses.firstOrNull { it.id == selectedLensId }
-
-    /** True when everything this lens *can* be told manually is set manually. */
-    val everythingManual: Boolean
-        get() = settings.anyManual &&
-            (!capabilities.supportsManualSensor || settings.manualExposure) &&
-            (!capabilities.supportsManualFocus || settings.manualFocus) &&
-            (!capabilities.supportsManualWhiteBalance || settings.manualWhiteBalance)
 }
 
 class CameraViewModel(application: Application) : AndroidViewModel(application),
@@ -199,8 +191,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         updateSettings { it.copy(format = next) }
     }
 
-    fun toggleZebra() = _state.update { it.copy(zebra = !it.zebra) }
-
     fun openSettings() = _state.update { it.copy(settingsOpen = true) }
 
     fun closeSettings() = _state.update { it.copy(settingsOpen = false) }
@@ -236,99 +226,25 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         updateSettings { it.copy(deviceRotation = degrees) }
     }
 
-    /** Flip exposure, focus and white balance together. */
-    fun setEverythingManual(manual: Boolean) {
-        val caps = _state.value.capabilities
-        updateSettings { current ->
-            current.copy(
-                manualExposure = manual && caps.supportsManualSensor,
-                iso = if (manual) seedIso(current) else current.iso,
-                exposureTimeNs = if (manual) seedExposure(current) else current.exposureTimeNs,
-                manualFocus = manual && caps.supportsManualFocus,
-                focusDiopters = if (manual) seedFocus(current) else current.focusDiopters,
-                manualWhiteBalance = manual && caps.supportsManualWhiteBalance,
-            )
-        }
-        if (!manual) controller.clearMetering()
+    fun setIso(iso: Int) = updateSettings { it.copy(iso = iso) }
+
+    fun setExposureTime(nanos: Long) = updateSettings { it.copy(exposureTimeNs = nanos) }
+
+    fun setFocusDiopters(diopters: Float) = updateSettings { it.copy(focusDiopters = diopters) }
+
+    /**
+     * The one reading taken from the camera's own meter, as the lens opens. It lands in the same
+     * two values the sliders write, so from here on there is nothing to tell them apart - and
+     * nothing that will move them again except the user.
+     */
+    override fun onMeteredExposure(iso: Int, exposureTimeNs: Long) {
+        updateSettings { it.copy(iso = iso, exposureTimeNs = exposureTimeNs) }
     }
 
-    fun setManualExposure(manual: Boolean) {
-        if (manual && !_state.value.capabilities.supportsManualSensor) {
-            showError("This lens has no manual sensor control")
-            return
-        }
-        updateSettings { current ->
-            current.copy(
-                manualExposure = manual,
-                iso = if (manual) seedIso(current) else current.iso,
-                exposureTimeNs = if (manual) seedExposure(current) else current.exposureTimeNs,
-            )
-        }
-    }
-
-    // Touching a slider IS the decision to go manual - there is no separate switch to find.
-    fun setIso(iso: Int) = updateSettings { current ->
-        current.copy(
-            manualExposure = true,
-            iso = iso,
-            exposureTimeNs = if (current.manualExposure) current.exposureTimeNs
-            else seedExposure(current),
-        )
-    }
-
-    fun setExposureTime(nanos: Long) = updateSettings { current ->
-        current.copy(
-            manualExposure = true,
-            exposureTimeNs = nanos,
-            iso = if (current.manualExposure) current.iso else seedIso(current),
-        )
-    }
-
-    /** Hand exposure back to the camera. ISO and shutter go together: the hardware AE is one unit. */
-    fun exposureAuto() = updateSettings { it.copy(manualExposure = false) }
-
-    fun setManualFocus(manual: Boolean) {
-        if (manual && !_state.value.capabilities.supportsManualFocus) {
-            showError("This lens is fixed focus")
-            return
-        }
-        updateSettings { current ->
-            current.copy(
-                manualFocus = manual,
-                focusDiopters = if (manual) seedFocus(current) else current.focusDiopters,
-            )
-        }
-        if (!manual) controller.clearMetering()
-    }
-
-    fun setFocusDiopters(diopters: Float) =
-        updateSettings { it.copy(manualFocus = true, focusDiopters = diopters) }
-
-    fun focusAuto() {
-        updateSettings { it.copy(manualFocus = false) }
-        controller.clearMetering()
-    }
-
-    fun setManualWhiteBalance(manual: Boolean) {
-        if (manual && !_state.value.capabilities.supportsManualWhiteBalance) {
-            showError("This lens has no manual white balance")
-            return
-        }
-        updateSettings { it.copy(manualWhiteBalance = manual) }
-    }
-
-    fun setKelvin(kelvin: Int) =
-        updateSettings { it.copy(manualWhiteBalance = true, kelvin = kelvin) }
-
-    fun whiteBalanceAuto() {
+    /** One of the camera's own fixed lights. Picking one drops any fine tuning done by hand. */
+    fun setWhiteBalance(preset: WhiteBalance) {
         _state.update { it.copy(whiteBalanceAdjust = false) }
-        updateSettings { it.copy(manualWhiteBalance = false, tint = 0f) }
-    }
-
-    /** One of the three fixed lights. Picking one leaves any fine tuning in place. */
-    fun setWhiteBalancePreset(kelvin: Int) {
-        _state.update { it.copy(whiteBalanceAdjust = false) }
-        updateSettings { it.copy(manualWhiteBalance = true, kelvin = kelvin) }
+        updateSettings { it.copy(whiteBalance = preset, tint = 0f) }
     }
 
     /**
@@ -337,10 +253,21 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
      * watch the image instead of a number.
      */
     fun toggleWhiteBalanceAdjust() {
+        if (!_state.value.capabilities.supportsManualWhiteBalance) {
+            showError("This lens only offers its own fixed lights")
+            return
+        }
         val turningOn = !_state.value.whiteBalanceAdjust
         _state.update { it.copy(whiteBalanceAdjust = turningOn) }
         if (turningOn) {
-            updateSettings { it.copy(manualWhiteBalance = true) }
+            // Start from where the current light already is, so nothing jumps on the first drag.
+            updateSettings {
+                it.copy(
+                    kelvin = if (it.whiteBalance == WhiteBalance.CUSTOM) it.kelvin
+                    else it.whiteBalance.kelvin,
+                    whiteBalance = WhiteBalance.CUSTOM,
+                )
+            }
             onStatus("Drag the frame: sideways for warmth, up and down for tint")
         }
     }
@@ -349,7 +276,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     fun dragWhiteBalance(horizontal: Float, vertical: Float) {
         updateSettings { current ->
             current.copy(
-                manualWhiteBalance = true,
+                whiteBalance = WhiteBalance.CUSTOM,
                 kelvin = (current.kelvin + horizontal * KELVIN_SPAN).roundToInt()
                     .coerceIn(MIN_KELVIN, MAX_KELVIN),
                 tint = (current.tint + vertical * 2f).coerceIn(-1f, 1f),
@@ -358,27 +285,20 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     }
 
     /**
-     * A tap on the frame means "focus here" either way: autofocus gets a metering point, manual
-     * focus borrows autofocus once and keeps the distance it lands on.
+     * A tap on the frame means "look there once". The lens searches, and the distance it lands
+     * on becomes the distance it holds - which is the only way a fixed focus distance can be
+     * found quickly.
      */
     fun tapPreview(normalizedX: Float, normalizedY: Float) {
         if (_state.value.whiteBalanceAdjust) return
-        if (_state.value.settings.manualFocus) {
-            controller.rackFocusAt(normalizedX, normalizedY)
-        } else {
-            controller.focusAt(normalizedX, normalizedY)
-        }
+        controller.rackFocusAt(normalizedX, normalizedY)
     }
 
     override fun onFocusRacked(diopters: Float) {
-        updateSettings { it.copy(manualFocus = true, focusDiopters = diopters) }
-        onStatus("Focus set to ${"%.2f".format(diopters)} dpt")
+        updateSettings { it.copy(focusDiopters = diopters) }
     }
 
     fun capture() = controller.capture()
-
-    /** Forget the tap-to-focus point and go back to continuous autofocus. */
-    fun resetFocusPoint() = controller.clearMetering()
 
     /**
      * Collect what this device reports about its cameras. Probing every id takes a moment, so it
@@ -440,15 +360,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         _state.update { it.copy(settings = updated) }
         controller.updateSettings(updated)
     }
-
-    private fun seedIso(settings: CaptureSettings): Int =
-        _state.value.liveIso ?: settings.iso
-
-    private fun seedExposure(settings: CaptureSettings): Long =
-        _state.value.liveExposureNs ?: settings.exposureTimeNs
-
-    private fun seedFocus(settings: CaptureSettings): Float =
-        _state.value.liveFocusDiopters ?: settings.focusDiopters
 
     // endregion
 
@@ -537,15 +448,20 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
             capabilities,
         )
         val format = if (settings.format in allowed) settings.format else allowed.first()
+        // A light the last lens offered may not be one this lens has.
+        val presets = capabilities.whiteBalancePresets
+        val whiteBalance = when {
+            settings.whiteBalance == WhiteBalance.CUSTOM &&
+                capabilities.supportsManualWhiteBalance -> settings.whiteBalance
+            settings.whiteBalance in presets -> settings.whiteBalance
+            else -> presets.firstOrNull() ?: WhiteBalance.DAYLIGHT
+        }
         return settings.copy(
-            manualExposure = settings.manualExposure && capabilities.supportsManualSensor,
             iso = capabilities.isoRange?.clamp(settings.iso) ?: settings.iso,
             exposureTimeNs = capabilities.exposureTimeRange?.clamp(settings.exposureTimeNs)
                 ?: settings.exposureTimeNs,
-            manualFocus = settings.manualFocus && capabilities.supportsManualFocus,
             focusDiopters = settings.focusDiopters.coerceIn(0f, capabilities.minFocusDistance),
-            manualWhiteBalance = settings.manualWhiteBalance &&
-                capabilities.supportsManualWhiteBalance,
+            whiteBalance = whiteBalance,
             format = format,
         )
     }

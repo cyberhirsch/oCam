@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -40,13 +39,11 @@ import androidx.compose.ui.unit.sp
 
 /**
  * A thin always-visible slider. Touching it anywhere jumps there, so a value is never more than
- * one gesture away - and any touch means "I am setting this myself", which is what switches the
- * control out of auto.
+ * one gesture away.
  */
 @Composable
 fun ThinSlider(
     progress: Float,
-    manual: Boolean,
     enabled: Boolean,
     onProgress: (Float) -> Unit,
     modifier: Modifier = Modifier,
@@ -73,25 +70,12 @@ fun ThinSlider(
             val centerY = size.height / 2f
             val track = 2.dp.toPx()
             val x = clamped * size.width
-            val radius = if (manual) 7.dp.toPx() else 5.dp.toPx()
-
             val rail = Color.White.copy(alpha = if (enabled) 0.20f else 0.08f)
-            val ink = when {
-                !enabled -> Color.White.copy(alpha = 0.15f)
-                manual -> Color.White
-                else -> Color.White.copy(alpha = 0.45f)
-            }
+            val ink = if (enabled) Color.White else Color.White.copy(alpha = 0.15f)
 
             drawLine(rail, Offset(0f, centerY), Offset(size.width, centerY), track, StrokeCap.Round)
             drawLine(ink, Offset(0f, centerY), Offset(x, centerY), track, StrokeCap.Round)
-
-            if (manual) {
-                drawCircle(ink, radius, Offset(x, centerY))
-            } else {
-                // Hollow thumb: the camera is choosing this value, not you.
-                drawCircle(Color.Black, radius, Offset(x, centerY))
-                drawCircle(ink, radius, Offset(x, centerY), style = Stroke(1.5.dp.toPx()))
-            }
+            drawCircle(ink, 7.dp.toPx(), Offset(x, centerY))
         }
     }
 }
@@ -103,7 +87,6 @@ fun ThinSlider(
 @Composable
 fun VerticalThinSlider(
     progress: Float,
-    manual: Boolean,
     enabled: Boolean,
     onProgress: (Float) -> Unit,
     modifier: Modifier = Modifier,
@@ -130,24 +113,12 @@ fun VerticalThinSlider(
             val centerX = size.width / 2f
             val track = 2.dp.toPx()
             val y = clamped * size.height
-            val radius = if (manual) 7.dp.toPx() else 5.dp.toPx()
-
             val rail = Color.White.copy(alpha = if (enabled) 0.20f else 0.08f)
-            val ink = when {
-                !enabled -> Color.White.copy(alpha = 0.15f)
-                manual -> Color.White
-                else -> Color.White.copy(alpha = 0.45f)
-            }
+            val ink = if (enabled) Color.White else Color.White.copy(alpha = 0.15f)
 
             drawLine(rail, Offset(centerX, 0f), Offset(centerX, size.height), track, StrokeCap.Round)
             drawLine(ink, Offset(centerX, 0f), Offset(centerX, y), track, StrokeCap.Round)
-
-            if (manual) {
-                drawCircle(ink, radius, Offset(centerX, y))
-            } else {
-                drawCircle(Color.Black, radius, Offset(centerX, y))
-                drawCircle(ink, radius, Offset(centerX, y), style = Stroke(1.5.dp.toPx()))
-            }
+            drawCircle(ink, 7.dp.toPx(), Offset(centerX, y))
         }
     }
 }
@@ -184,81 +155,34 @@ fun FlatButton(
     )
 }
 
-/** The auto button: a square with one letter in it, the smallest thing that can still be hit. */
-@Composable
-fun SquareButton(
-    label: String,
-    active: Boolean,
-    enabled: Boolean = true,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val background = when {
-        !enabled -> Color(0x0DFFFFFF)
-        active -> Color.White
-        else -> Color(0x1FFFFFFF)
-    }
-    val foreground = when {
-        !enabled -> Color(0x40FFFFFF)
-        active -> Color.Black
-        else -> Color(0xCCFFFFFF)
-    }
-    Box(
-        modifier = modifier
-            .size(26.dp)
-            .clip(RoundedCornerShape(2.dp))
-            .background(background)
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text = label, color = foreground, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
-
 /**
  * The same control stood on end, for the panel beside the frame when the phone is on its side.
- * Button on top, slider down the middle, name and value at the foot.
+ * Slider down the middle, name and value at the foot.
  */
 @Composable
 fun VerticalControl(
     label: String,
     value: String,
     progress: Float,
-    manual: Boolean,
     available: Boolean,
     onProgress: (Float) -> Unit,
     sliderHeight: Dp,
-    buttonLabel: String = "A",
-    buttonActive: Boolean = !manual,
-    showSlider: Boolean = true,
-    onButton: () -> Unit,
 ) {
     Column(
         modifier = Modifier.semantics { contentDescription = "$label $value" },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        SquareButton(
-            label = buttonLabel,
-            active = buttonActive,
+        VerticalThinSlider(
+            progress = progress,
             enabled = available,
-            onClick = onButton,
+            onProgress = onProgress,
+            modifier = Modifier.height(sliderHeight),
         )
-        if (showSlider) {
-            VerticalThinSlider(
-                progress = progress,
-                manual = manual,
-                enabled = available,
-                onProgress = onProgress,
-                modifier = Modifier.height(sliderHeight),
-            )
-        } else {
-            Spacer(modifier = Modifier.height(sliderHeight))
-        }
         Text(text = label, color = Color(0x73FFFFFF), fontSize = 9.sp)
         Text(
             text = value,
-            color = if (manual && available) Color.White else Color(0xA6FFFFFF),
+            color = if (available) Color.White else Color(0xA6FFFFFF),
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
         )
@@ -266,22 +190,16 @@ fun VerticalControl(
 }
 
 /**
- * One camera parameter on one line: name, the button that hands it back to the camera, the
- * slider, and the value it currently has. The choice is only ever "press the button" or "move
- * the slider" - never a menu.
+ * One camera parameter on one line: name, slider, and the value it currently has. There is no
+ * mode to choose - the slider is the setting.
  */
 @Composable
 fun ControlRow(
     label: String,
     value: String,
     progress: Float,
-    manual: Boolean,
     available: Boolean,
     onProgress: (Float) -> Unit,
-    buttonLabel: String = "A",
-    buttonActive: Boolean = !manual,
-    showSlider: Boolean = true,
-    onButton: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -290,24 +208,13 @@ fun ControlRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RowLabel(label)
-        SquareButton(
-            label = buttonLabel,
-            active = buttonActive,
+        ThinSlider(
+            progress = progress,
             enabled = available,
-            onClick = onButton,
+            onProgress = onProgress,
+            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
         )
-        if (showSlider) {
-            ThinSlider(
-                progress = progress,
-                manual = manual,
-                enabled = available,
-                onProgress = onProgress,
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-            )
-        } else {
-            Spacer(modifier = Modifier.weight(1f))
-        }
-        RowValue(value, highlighted = manual && available)
+        RowValue(value, highlighted = available)
     }
 }
 

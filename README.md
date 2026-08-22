@@ -1,8 +1,7 @@
 # oCam
 
 A small Android camera app for people who want the controls the phone usually hides:
-everything on auto, everything on manual, RAW capture, and every lens individually
-selectable.
+a fully manual camera, RAW capture, and every lens individually selectable.
 
 Built directly on Camera2 (CameraX does not expose this much of the sensor) with a
 Jetpack Compose overlay.
@@ -10,23 +9,20 @@ Jetpack Compose overlay.
 ## The interface
 
 Every control is on screen at once. There are no menus, no sheets and nothing to open:
-each parameter is a thin slider with its button directly underneath.
+each parameter is a thin slider, and the slider is the setting.
 
 ```
-  ────────────●──────────────
-  [ AUTO ]  ISO           400
-  ──────●────────────────────
-  [ AUTO ]  SEC          1/60
+  ISO  ────────────●──────────────   400
+  SEC  ──────●────────────────────  1/60
 ```
 
-**Two ways to set anything, and only two.** Press the button and the camera decides, or
-move the slider and you decide. Touching a slider is itself the decision to go manual -
-there is no separate switch to find first. `ALL AUTO` at the top hands everything back at
-once.
+**Nothing is automatic.** There is no auto mode to leave or return to: exposure, focus and
+white balance are set, and the camera changes none of them between frames.
 
-While a control is on auto its slider keeps tracking what the camera is choosing, drawn
-with a hollow thumb. So you can see the exposure the camera picked, and taking over never
-makes the image jump.
+Two things happen once, so that starting from nothing is not a hunt. When a lens opens, the
+meter is read a single time and its reading lands in the ISO and shutter sliders, and the
+lens looks once and keeps the distance it finds. After that only you move them - a tap on
+the frame is another single look, not a mode.
 
 ## What it does
 
@@ -36,15 +32,22 @@ lists the top level cameras and the physical sub-cameras, and opens whichever on
 Each is labelled with its zoom factor relative to the default lens on that side, its
 35mm-equivalent focal length and its camera id, plus whether it can shoot RAW.
 
-| Control | Auto | Manual |
-| --- | --- | --- |
-| ISO / SEC | AE | sensitivity and shutter over the sensor's full reported range |
-| FOCUS | continuous AF, tap the preview for a spot, double tap to release it | distance from infinity to the lens minimum |
-| WB | AWB | colour temperature, 2000K to 10000K |
+| Control | What it is |
+| --- | --- |
+| ISO / SEC | sensitivity and shutter over the sensor's full reported range |
+| FOCUS | distance from infinity to the lens minimum; tap the frame to look once |
+| WB | the camera's own lights - `TUN` `DAY` `SHD` - or `ADJ` to set it by hand |
 
-ISO and SEC share one button on purpose: the hardware auto-exposure is all or nothing, so
-taking over either one necessarily turns off the other. There is no exposure compensation:
-it only ever biases a meter, and the sliders that replace it say what the camera is doing.
+There is no exposure compensation and no zebra: the first only biases a meter that is not
+running, and the second measured the preview rather than the picture.
+
+**White balance is the camera's, not this app's.** The named lights are handed to the
+camera as its own fixed illuminants, because firmware knows what its sensor's channels do
+under tungsten and an app converting a temperature into channel gains does not. A raw
+sensor's green channel collects roughly twice what red and blue do, and by how much is a
+property of that sensor: gains worked out from the illuminant alone come out near 1:1:1 and
+leave every frame green. `ADJ` is the only one this app computes, and it computes it as a
+shift away from the gains the camera itself reported for the light it was on.
 
 **RAW.** The format button cycles JPEG → RAW → RAW+JPEG on lenses that support it. RAW is
 written as DNG built from the exact capture result that produced the frame, so the black
@@ -66,11 +69,13 @@ down until the phone is rebooted.
 
 Two defences, because neither is enough alone:
 
-- **Before opening.** Cameras that declare `SYSTEM_CAMERA`, or whose colour filter
-  is infrared, are never offered. Softer signals - a depth or motion-tracking
-  capability, or a largest image under one megapixel - only earn a `!` on the lens
-  button and a warning; they still open, on a second tap, because a guess should
-  not silently hide a camera someone wants.
+- **Before opening.** How hard the test is depends on how the camera was found. One
+  the system advertises is one the system means for apps, and is taken at its word
+  unless it says outright that it is something else: `SYSTEM_CAMERA`, an infrared
+  colour filter, no still output at all. One found only by probing ids has made no
+  such claim, and that is where the depth and assist sensors live, so it also has to
+  look like a photo camera before it is offered - a real focal length, no depth or
+  motion-tracking role, and a largest image of at least 1.5 megapixels.
 - **After opening.** The app writes down which lens it is about to open, and clears
   the note once the lens is running. A note still there at the next start means
   that lens is what went down. It is marked, never opened automatically, and takes
@@ -129,16 +134,16 @@ CameraViewModel     UI state, user actions, clamps settings to what a lens suppo
 camera/
   Lenses.kt         enumerates openable cameras, reads per lens capabilities
   CameraController  device + session + capture pipeline, on its own threads
-  CaptureSettings   what the camera is being told to do, Kelvin to channel gains
+  CaptureSettings   what the camera is being told to do, and the white balance shift
 io/PhotoStore       JPEG and DNG writing through MediaStore
 ui/                 Compose preview, the slider rows, lens picker
 ```
 
 `CameraController` keeps all camera calls on one background thread and does image encoding
-on a second, so the UI thread only ever sees state updates. Still capture runs the standard
-lock-focus → precapture → capture sequence when the relevant control is on auto, and skips
-straight to the shot when it is manual; a timeout takes the picture anyway if AF or AE never
-converge.
+on a second, so the UI thread only ever sees state updates. Still capture goes straight to
+the shot: with the exposure and the focus distance already set there is nothing to converge.
+Only a lens that cannot be told one of them runs the lock-focus → precapture sequence first,
+with a timeout that takes the picture anyway.
 
 Preview, JPEG at full size and RAW at full size are configured as one session, which is a
 stream combination the platform guarantees for RAW-capable devices as long as the preview

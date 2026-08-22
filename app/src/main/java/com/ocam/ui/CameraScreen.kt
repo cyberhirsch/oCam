@@ -56,6 +56,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocam.CameraUiState
 import com.ocam.CameraViewModel
+import com.ocam.camera.WhiteBalance
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -63,8 +64,6 @@ import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-private const val DAYLIGHT_KELVIN = 5500
-private const val TUNGSTEN_KELVIN = 3000
 
 /** How often the preview is read back for the histogram and the clipping warning. */
 private const val SAMPLE_INTERVAL_MS = 200L
@@ -159,7 +158,6 @@ private fun LandscapeControls(
     frame: FrameStats,
 ) {
     val context = LocalContext.current
-    val settings = state.settings
     val caps = state.capabilities
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -169,10 +167,8 @@ private fun LandscapeControls(
         // the row with SET in it. The sliders take what is left instead.
         val sliderHeight = (maxHeight - 180.dp).coerceIn(56.dp, 170.dp)
 
-        // The shutter keeps its strip; the parameters take the rest, and when that is little
-        // enough that three buttons will not sit on one line, they take two.
+        // The shutter keeps its strip; the parameters take the rest.
         val strip = 96.dp
-        val narrow = maxWidth - strip < 160.dp
 
         Row(modifier = Modifier.fillMaxHeight()) {
             Column(
@@ -180,12 +176,11 @@ private fun LandscapeControls(
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(if (narrow) 6.dp else 14.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     VerticalControl(
                         label = "ISO",
                         value = isoText(state),
                         progress = isoProgress(state),
-                        manual = settings.manualExposure,
                         available = caps.supportsManualIso,
                         sliderHeight = sliderHeight,
                         onProgress = { progress ->
@@ -196,13 +191,11 @@ private fun LandscapeControls(
                                 )
                             }
                         },
-                        onButton = viewModel::exposureAuto,
                     )
                     VerticalControl(
                         label = "SEC",
                         value = shutterText(state),
                         progress = shutterProgress(state),
-                        manual = settings.manualExposure,
                         available = caps.supportsManualShutter,
                         sliderHeight = sliderHeight,
                         onProgress = { progress ->
@@ -213,7 +206,6 @@ private fun LandscapeControls(
                                 )
                             }
                         },
-                        onButton = viewModel::exposureAuto,
                     )
                 }
 
@@ -246,30 +238,14 @@ private fun LandscapeControls(
                         active = state.settingsOpen,
                         onClick = viewModel::openSettings,
                     )
-                    if (!narrow) {
-                        FlatButton(
-                            label = "FILES",
-                            active = false,
-                            onClick = { openPhotoFolder(context) },
-                        )
-                    }
-                }
-                if (narrow) {
-                    Row(modifier = Modifier.padding(top = 6.dp)) {
-                        FlatButton(
-                            label = "FILES",
-                            active = false,
-                            onClick = { openPhotoFolder(context) },
-                        )
-                    }
                 }
             }
 
             Box(modifier = Modifier.width(strip).fillMaxHeight()) {
                 FlatButton(
-                    label = "ZEBRA",
-                    active = state.zebra,
-                    onClick = viewModel::toggleZebra,
+                    label = "FILES",
+                    active = false,
+                    onClick = { openPhotoFolder(context) },
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp),
                 )
                 ShutterButton(
@@ -368,15 +344,12 @@ private fun CameraPreview(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        detectTapGestures(
-                            onTap = { offset ->
-                                viewModel.tapPreview(
-                                    offset.x / size.width.toFloat(),
-                                    offset.y / size.height.toFloat(),
-                                )
-                            },
-                            onDoubleTap = { viewModel.resetFocusPoint() },
-                        )
+                        detectTapGestures { offset ->
+                            viewModel.tapPreview(
+                                offset.x / size.width.toFloat(),
+                                offset.y / size.height.toFloat(),
+                            )
+                        }
                     }
                     .pointerInput(state.whiteBalanceAdjust) {
                         if (!state.whiteBalanceAdjust) return@pointerInput
@@ -426,9 +399,6 @@ private fun CameraPreview(
                     }
                 },
             )
-            if (state.zebra) {
-                ZebraOverlay(stats = frame, modifier = Modifier.fillMaxSize())
-            }
         }
     }
 }
@@ -479,12 +449,6 @@ private fun TopStrip(
                 )
             }
         }
-        FlatButton(
-            label = "ALL AUTO",
-            active = !state.settings.anyManual,
-            enabled = state.settings.anyManual,
-            onClick = { viewModel.setEverythingManual(false) },
-        )
     }
 }
 
@@ -504,25 +468,13 @@ private fun FocusColumn(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(text = focusText(state), color = Color(0xCCFFFFFF), fontSize = 10.sp)
-        if (state.settings.manualFocus && caps.supportsManualFocus) {
-            VerticalThinSlider(
-                progress = focusProgress(state),
-                manual = true,
-                enabled = true,
-                onProgress = { progress ->
-                    viewModel.setFocusDiopters(progress * caps.minFocusDistance)
-                },
-                modifier = Modifier.height(150.dp),
-            )
-        }
-        SquareButton(
-            label = "A",
-            active = !state.settings.manualFocus,
+        VerticalThinSlider(
+            progress = focusProgress(state),
             enabled = caps.supportsManualFocus,
-            onClick = {
-                if (state.settings.manualFocus) viewModel.focusAuto()
-                else viewModel.setManualFocus(true)
+            onProgress = { progress ->
+                viewModel.setFocusDiopters(progress * caps.minFocusDistance)
             },
+            modifier = Modifier.height(150.dp),
         )
     }
 }
@@ -535,7 +487,7 @@ private fun WhiteBalanceColumn(
     modifier: Modifier = Modifier,
 ) {
     val settings = state.settings
-    val available = state.capabilities.supportsManualWhiteBalance
+    val caps = state.capabilities
     Column(
         modifier = modifier
             .background(Color(0x40000000), RoundedCornerShape(4.dp))
@@ -544,27 +496,18 @@ private fun WhiteBalanceColumn(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(text = whiteBalanceText(state), color = Color(0xCCFFFFFF), fontSize = 10.sp)
-        SquareButton(
-            label = "A",
-            active = !settings.manualWhiteBalance,
-            onClick = viewModel::whiteBalanceAuto,
-        )
+        // The camera's own lights, only the ones it says it has.
+        caps.whiteBalancePresets.forEach { preset ->
+            FlatButton(
+                label = preset.label,
+                active = settings.whiteBalance == preset,
+                onClick = { viewModel.setWhiteBalance(preset) },
+            )
+        }
         FlatButton(
-            label = "DAY",
-            active = settings.manualWhiteBalance && settings.kelvin == DAYLIGHT_KELVIN,
-            enabled = available,
-            onClick = { viewModel.setWhiteBalancePreset(DAYLIGHT_KELVIN) },
-        )
-        FlatButton(
-            label = "TUN",
-            active = settings.manualWhiteBalance && settings.kelvin == TUNGSTEN_KELVIN,
-            enabled = available,
-            onClick = { viewModel.setWhiteBalancePreset(TUNGSTEN_KELVIN) },
-        )
-        FlatButton(
-            label = "ADJ",
-            active = state.whiteBalanceAdjust,
-            enabled = available,
+            label = WhiteBalance.CUSTOM.label,
+            active = state.whiteBalanceAdjust || settings.whiteBalance == WhiteBalance.CUSTOM,
+            enabled = caps.supportsManualWhiteBalance,
             onClick = viewModel::toggleWhiteBalanceAdjust,
         )
     }
@@ -572,7 +515,7 @@ private fun WhiteBalanceColumn(
 
 private fun whiteBalanceText(state: CameraUiState): String {
     val settings = state.settings
-    if (!settings.manualWhiteBalance) return "auto"
+    if (settings.whiteBalance != WhiteBalance.CUSTOM) return formatKelvin(settings.whiteBalance.kelvin)
     return formatKelvin(settings.kelvin) +
         if (abs(settings.tint) > 0.02f) " ${"%+.1f".format(settings.tint)}" else ""
 }
@@ -580,7 +523,6 @@ private fun whiteBalanceText(state: CameraUiState): String {
 /** Exposure stays under the frame; focus and white balance are along its sides. */
 @Composable
 private fun Controls(state: CameraUiState, viewModel: CameraViewModel, frame: FrameStats) {
-    val settings = state.settings
     val caps = state.capabilities
 
     Column(
@@ -594,7 +536,6 @@ private fun Controls(state: CameraUiState, viewModel: CameraViewModel, frame: Fr
             label = "ISO",
             value = isoText(state),
             progress = isoProgress(state),
-            manual = settings.manualExposure,
             available = caps.supportsManualIso,
             onProgress = { progress ->
                 caps.isoRange?.let { range ->
@@ -604,14 +545,12 @@ private fun Controls(state: CameraUiState, viewModel: CameraViewModel, frame: Fr
                     )
                 }
             },
-            onButton = viewModel::exposureAuto,
         )
 
         ControlRow(
             label = "SEC",
             value = shutterText(state),
             progress = shutterProgress(state),
-            manual = settings.manualExposure,
             available = caps.supportsManualShutter,
             onProgress = { progress ->
                 caps.exposureTimeRange?.let { range ->
@@ -621,7 +560,6 @@ private fun Controls(state: CameraUiState, viewModel: CameraViewModel, frame: Fr
                     )
                 }
             },
-            onButton = viewModel::exposureAuto,
         )
 
         LensRow(state, viewModel)
@@ -669,16 +607,7 @@ private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel, frame: 
         modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(
-            modifier = Modifier.weight(1f),
-            horizontalAlignment = Alignment.Start,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            FlatButton(
-                label = "ZEBRA",
-                active = state.zebra,
-                onClick = viewModel::toggleZebra,
-            )
+        Box(modifier = Modifier.weight(1f)) {
             FlatButton(label = "FILES", active = false, onClick = { openPhotoFolder(context) })
         }
         ShutterButton(
@@ -753,61 +682,48 @@ private fun openPhotoFolder(context: Context) {
         .recoverCatching { context.startActivity(gallery) }
 }
 
-// The sliders show what the camera is doing even while it is doing it itself, so switching to
-// manual never makes the image jump.
+// A slider shows the setting, not the reading. The two agree anyway - the camera is doing what
+// it was told - and the readout above the frame is where what it actually did is shown.
 
-private fun isoValue(state: CameraUiState): Int =
-    if (state.settings.manualExposure) state.settings.iso
-    else state.liveIso ?: state.settings.iso
-
-private fun isoText(state: CameraUiState): String =
-    if (state.settings.manualExposure) state.settings.iso.toString()
-    else state.liveIso?.toString() ?: "auto"
+private fun isoText(state: CameraUiState): String = state.settings.iso.toString()
 
 private fun isoProgress(state: CameraUiState): Float {
     val range = state.capabilities.isoRange ?: return 0f
-    return toLogProgress(isoValue(state).toFloat(), range.lower.toFloat(), range.upper.toFloat())
-}
-
-private fun shutterValue(state: CameraUiState): Long =
-    if (state.settings.manualExposure) state.settings.exposureTimeNs
-    else state.liveExposureNs ?: state.settings.exposureTimeNs
-
-private fun shutterText(state: CameraUiState): String =
-    if (state.settings.manualExposure) formatShutter(state.settings.exposureTimeNs)
-    else state.liveExposureNs?.let(::formatShutter) ?: "auto"
-
-private fun shutterProgress(state: CameraUiState): Float {
-    val range = state.capabilities.exposureTimeRange ?: return 0f
     return toLogProgress(
-        shutterValue(state).toFloat(),
+        state.settings.iso.toFloat(),
         range.lower.toFloat(),
         range.upper.toFloat(),
     )
 }
 
-private fun focusText(state: CameraUiState): String = when {
-    !state.capabilities.supportsManualFocus -> "fixed"
-    state.settings.manualFocus -> formatFocus(state.settings.focusDiopters)
-    else -> state.liveFocusDiopters?.let(::formatFocus) ?: "auto"
+private fun shutterText(state: CameraUiState): String = formatShutter(state.settings.exposureTimeNs)
+
+private fun shutterProgress(state: CameraUiState): Float {
+    val range = state.capabilities.exposureTimeRange ?: return 0f
+    return toLogProgress(
+        state.settings.exposureTimeNs.toFloat(),
+        range.lower.toFloat(),
+        range.upper.toFloat(),
+    )
 }
+
+private fun focusText(state: CameraUiState): String =
+    if (!state.capabilities.supportsManualFocus) "fixed"
+    else formatFocus(state.settings.focusDiopters)
 
 private fun focusProgress(state: CameraUiState): Float {
     val closest = state.capabilities.minFocusDistance
     if (closest <= 0f) return 0f
-    val diopters = if (state.settings.manualFocus) state.settings.focusDiopters
-    else state.liveFocusDiopters ?: state.settings.focusDiopters
-    return (diopters / closest).coerceIn(0f, 1f)
+    return (state.settings.focusDiopters / closest).coerceIn(0f, 1f)
 }
 
 private fun liveReadout(state: CameraUiState): String {
-    val settings = state.settings
     val parts = listOfNotNull(
         state.liveIso?.let { "ISO $it" },
         state.liveExposureNs?.let(::formatShutter),
         formatAperture(state.liveAperture),
         state.liveFocusDiopters?.let(::formatFocus),
-        if (settings.manualWhiteBalance) formatKelvin(settings.kelvin) else "AWB",
+        whiteBalanceText(state),
     )
     return if (parts.isEmpty()) "…" else parts.joinToString(" · ")
 }

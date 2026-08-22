@@ -1,6 +1,7 @@
 package com.ocam.camera
 
 import android.graphics.ImageFormat
+import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.RggbChannelVector
 import kotlin.math.ln
@@ -29,28 +30,40 @@ enum class CaptureFormat(
 }
 
 /**
- * What the camera is being told to do. Exposure is one unit on purpose: the hardware AE is
- * all-or-nothing, so ISO and shutter go manual together.
+ * The light the picture is being balanced for.
+ *
+ * The three named ones are handed to the camera as its own fixed illuminants rather than as
+ * numbers this app invents. Firmware knows what its sensor's channels do under tungsten; a
+ * temperature converted to gains here does not, and guessing that produced a green cast.
+ * [CUSTOM] is the only one this app computes, and it computes it as a shift away from gains the
+ * camera itself reported, so the sensor's own balance is still what it starts from.
+ */
+enum class WhiteBalance(val label: String, val kelvin: Int, val awbMode: Int) {
+    TUNGSTEN("TUN", 2850, CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT),
+    DAYLIGHT("DAY", 5500, CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT),
+    SHADE("SHD", 7500, CameraMetadata.CONTROL_AWB_MODE_SHADE),
+    CUSTOM("ADJ", 0, CameraMetadata.CONTROL_AWB_MODE_OFF),
+}
+
+/**
+ * What the camera is being told to do. There is no automatic mode in here: exposure, focus and
+ * white balance are all set, and the camera changes none of them by itself.
  */
 data class CaptureSettings(
-    val manualExposure: Boolean = false,
-    val iso: Int = 100,
+    val iso: Int = 400,
     val exposureTimeNs: Long = 1_000_000_000L / 60,
-    val manualFocus: Boolean = false,
     /** Focus distance in diopters (1/m). 0 is infinity. */
     val focusDiopters: Float = 0f,
-    val manualWhiteBalance: Boolean = false,
-    val kelvin: Int = 5200,
+    val whiteBalance: WhiteBalance = WhiteBalance.DAYLIGHT,
+    /** The temperature [WhiteBalance.CUSTOM] is aiming at. */
+    val kelvin: Int = 5500,
     /** Green (negative) to magenta (positive) shift, -1..1. */
     val tint: Float = 0f,
     val aperture: Float? = null,
     val format: CaptureFormat = CaptureFormat.JPEG,
     /** Physical device rotation in degrees, from the orientation sensor. */
     val deviceRotation: Int = 0,
-) {
-    val allManual: Boolean get() = manualExposure && manualFocus && manualWhiteBalance
-    val anyManual: Boolean get() = manualExposure || manualFocus || manualWhiteBalance
-}
+)
 
 /** Identity matrix for COLOR_CORRECTION_TRANSFORM, as numerator/denominator pairs. */
 val IDENTITY_COLOR_TRANSFORM: ColorSpaceTransform = ColorSpaceTransform(
@@ -61,12 +74,8 @@ val IDENTITY_COLOR_TRANSFORM: ColorSpaceTransform = ColorSpaceTransform(
     )
 )
 
-/**
- * Channel gains that render a scene lit at [kelvin] as neutral. The illuminant colour comes from
- * Tanner Helland's blackbody approximation; the gains are its reciprocal, normalised so the
- * smallest gain is 1.0 (gains below 1 would just throw away signal).
- */
-fun kelvinToGains(kelvin: Int, tint: Float = 0f): RggbChannelVector {
+/** The colour of a blackbody at [kelvin], as Tanner Helland's approximation of it. */
+private fun illuminantRgb(kelvin: Int): Triple<Double, Double, Double> {
     val t = kelvin.coerceIn(1500, 15000) / 100.0
 
     val red = if (t <= 66) 255.0 else 329.698727446 * (t - 60).pow(-0.1332047592)
@@ -80,22 +89,41 @@ fun kelvinToGains(kelvin: Int, tint: Float = 0f): RggbChannelVector {
         t <= 19 -> 1.0
         else -> 138.5177312231 * ln(t - 10) - 305.0447927307
     }
+    return Triple(red.coerceIn(1.0, 255.0), green.coerceIn(1.0, 255.0), blue.coerceIn(1.0, 255.0))
+}
 
-    val r = red.coerceIn(1.0, 255.0)
-    val g = green.coerceIn(1.0, 255.0)
-    val b = blue.coerceIn(1.0, 255.0)
+/**
+ * Gains for [targetKelvin], worked out as a move away from [anchor] - the gains the camera
+ * reported while it was balanced for [anchorKelvin].
+ *
+ * Absolute gains cannot be computed from a colour temperature alone. A raw sensor's green
+ * channel collects roughly twice what red and blue do, and by how much is a property of that
+ * particular sensor, not of the light; gains derived from the illuminant alone come out near
+ * 1:1:1 and leave every picture green. The camera's own reported gains carry that sensor
+ * property, so only the difference between two illuminants is computed here.
+ */
+fun shiftedGains(
+    anchor: RggbChannelVector,
+    anchorKelvin: Int,
+    targetKelvin: Int,
+    tint: Float,
+): RggbChannelVector {
+    val (anchorR, anchorG, anchorB) = illuminantRgb(anchorKelvin)
+    val (targetR, targetG, targetB) = illuminantRgb(targetKelvin)
 
-    val gainR = 255.0 / r
-    // Tint trades green against magenta, which on a Bayer sensor is simply how much of the
-    // green channel is let through relative to the other two.
-    val gainG = 255.0 / g * (1.0 - tint.coerceIn(-1f, 1f) * 0.4)
-    val gainB = 255.0 / b
-    val smallest = minOf(gainR, gainG, gainB)
+    var red = anchor.red * (anchorR / targetR)
+    // Tint trades green against magenta, which on a Bayer sensor is how much of the green
+    // channel is let through relative to the other two.
+    var green = (anchor.greenEven + anchor.greenOdd) / 2.0 * (anchorG / targetG) *
+        (1.0 - tint.coerceIn(-1f, 1f) * 0.4)
+    var blue = anchor.blue * (anchorB / targetB)
 
-    return RggbChannelVector(
-        (gainR / smallest).toFloat(),
-        (gainG / smallest).toFloat(),
-        (gainG / smallest).toFloat(),
-        (gainB / smallest).toFloat(),
-    )
+    // A gain below 1.0 throws signal away rather than balancing anything.
+    val smallest = minOf(red, green, blue)
+    if (smallest > 0.0) {
+        red /= smallest
+        green /= smallest
+        blue /= smallest
+    }
+    return RggbChannelVector(red.toFloat(), green.toFloat(), green.toFloat(), blue.toFloat())
 }
