@@ -37,12 +37,18 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          version="1.0.${BUILD_NUMBER}"
-          short_sha="${BUILD_COMMIT:0:7}"
-          versioned="oCam-${version}-debug.apk"
           built=app/build/outputs/apk/debug/app-debug.apk
-
+          meta=app/build/outputs/apk/debug/output-metadata.json
           test -f "$built"
+
+          # Take the version from what the build actually stamped into the APK, so the
+          # name of the file can never claim a version the manifest does not carry.
+          version=$(jq -r '.elements[0].versionName // empty' "$meta" 2>/dev/null || true)
+          [ -n "$version" ] || version="1.0.${BUILD_NUMBER}+${BUILD_COMMIT:0:7}"
+          short_sha="${BUILD_COMMIT:0:7}"
+          # '+' is legal in a file name but confuses enough URL handling to avoid it.
+          versioned="oCam-$(printf '%s' "$version" | tr '+' '-')-debug.apk"
+
           cp "$built" "$versioned"
           # A second copy under a name that never changes, so the download link
           # and the QR code pointing at it keep working across builds.
@@ -68,7 +74,10 @@ jobs:
           SHORT_SHA: ${{ steps.apk.outputs.short_sha }}
           VERSIONED: ${{ steps.apk.outputs.versioned }}
         run: |
-          notes="oCam $VERSION, built from $SHORT_SHA on $(date -u '+%Y-%m-%d %H:%M UTC').
+          notes="oCam $VERSION, built $(date -u '+%Y-%m-%d %H:%M UTC') from $SHORT_SHA.
+
+          That same version string is in the APK's manifest, in the name of the
+          versioned file, and at the bottom of the app's settings sheet.
 
           oCam-debug.apk always points at the newest build; the versioned file
           next to it is this build specifically."

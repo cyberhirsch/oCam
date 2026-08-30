@@ -6,6 +6,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.os.Build
+import com.ocam.appVersion
 
 /**
  * A plain-text report of what this device's cameras actually say about themselves, including the
@@ -95,8 +96,4 @@ object Diagnostics {
         CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_SECURE_IMAGE_DATA -> "SECURE"
         else -> null
     }
-
-    private fun appVersion(context: Context): String = runCatching {
-        context.packageManager.getPackageInfo(context.packageName, 0).versionName
-    }.getOrNull() ?: "?"
 }

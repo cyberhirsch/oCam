@@ -14,9 +14,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.window.Dialog
 import com.ocam.CameraUiState
 import com.ocam.CameraViewModel
+import com.ocam.appVersion
 
 /**
  * The standing choice of which file types to write. The per-shot choice stays on the camera
@@ -24,6 +26,7 @@ import com.ocam.CameraViewModel
  */
 @Composable
 fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () -> Unit) {
+    val context = LocalContext.current
     Dialog(onDismissRequest = onClose) {
         Column(
             modifier = Modifier
@@ -80,8 +83,16 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Which build this is, on the phone itself: the version and the commit it was
+                // built from, the same string the downloaded file is named after.
+                Text(
+                    text = "oCam ${appVersion(context)}",
+                    color = Color(0x88FFFFFF),
+                    fontSize = 11.sp,
+                    modifier = Modifier.weight(1f),
+                )
                 FlatButton(label = "CLOSE", active = false, onClick = onClose)
             }
         }
