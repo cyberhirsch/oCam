@@ -84,6 +84,12 @@ Two defences, because neither is enough alone:
 That second part is what makes this work on a phone nobody has tested: the device
 teaches the app which of its cameras are real, one attempt at a time.
 
+**And the last word is yours.** No rule read off metadata is right on every phone -
+the one that hides a depth sensor here hides a macro lens there. Settings lists every
+camera the phone answers for, with what is known about each: switch off the ones that
+are not cameras and they leave the picker for good, and give the rest names that mean
+something. A name replaces the zoom label on the button and in the readout.
+
 ### When a lens misbehaves
 
 Long press the readout at the top of the screen. The app collects what the device

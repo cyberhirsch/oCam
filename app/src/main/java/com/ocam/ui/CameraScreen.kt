@@ -213,10 +213,10 @@ private fun LandscapeControls(
                     modifier = Modifier.padding(top = 14.dp).horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    state.lenses.forEach { lens ->
+                    state.visibleLenses.forEach { lens ->
                         val risky = lens.warning != null || lens.id in state.troubled
                         Pill(
-                            text = lens.zoomLabel,
+                            text = state.lensLabel(lens),
                             subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
                             selected = lens.id == state.selectedLensId,
                             onClick = { viewModel.selectLens(lens.id) },
@@ -442,7 +442,7 @@ private fun TopStrip(
             )
             if (lens != null) {
                 Text(
-                    text = "${lens.facingLabel} ${lens.zoomLabel} · ${lens.detailLabel}" +
+                    text = "${lens.facingLabel} ${state.lensLabel(lens)} · ${lens.detailLabel}" +
                         if (lens.supportsRaw) " · raw" else "",
                     color = Color(0x99FFFFFF),
                     fontSize = 10.sp,
@@ -577,12 +577,12 @@ private fun LensRow(state: CameraUiState, viewModel: CameraViewModel) {
             modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            state.lenses.forEach { lens ->
+            state.visibleLenses.forEach { lens ->
                 // "!" marks a lens that looks like a helper sensor or has misbehaved here before.
                 // It still opens, but only on a second tap.
                 val risky = lens.warning != null || lens.id in state.troubled
                 Pill(
-                    text = lens.zoomLabel,
+                    text = state.lensLabel(lens),
                     subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
                     selected = lens.id == state.selectedLensId,
                     onClick = { viewModel.selectLens(lens.id) },

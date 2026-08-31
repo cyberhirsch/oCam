@@ -52,6 +52,9 @@ data class CameraUiState(
     val diagnostics: String? = null,
     /** Lenses that failed or took the camera down on this device. */
     val troubled: Set<String> = emptySet(),
+    /** Lenses the owner has taken out of the picker, and the names they gave them. */
+    val hiddenLenses: Set<String> = emptySet(),
+    val lensNames: Map<String, String> = emptyMap(),
     /** While true, dragging on the frame sets white balance instead of focusing. */
     val whiteBalanceAdjust: Boolean = false,
     /** The file types the user allows at all, set in settings. */
@@ -65,6 +68,17 @@ data class CameraUiState(
         get() = formatChoices(saveJpeg, saveHeic, saveRaw, capabilities)
 
     val selectedLens: Lens? get() = lenses.firstOrNull { it.id == selectedLensId }
+
+    /**
+     * What the picker offers. Hiding is the owner's own judgement about which of this phone's
+     * cameras are cameras, so it wins over anything the app worked out - except that hiding the
+     * lot would leave nothing to open, and then the list stands as it is.
+     */
+    val visibleLenses: List<Lens>
+        get() = lenses.filter { it.id !in hiddenLenses }.ifEmpty { lenses }
+
+    /** What to call a lens: the owner's name for it, or what the phone says it is. */
+    fun lensLabel(lens: Lens): String = lensNames[lens.id] ?: lens.zoomLabel
 }
 
 class CameraViewModel(application: Application) : AndroidViewModel(application),
@@ -97,6 +111,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 saveJpeg = appSettings.saveJpeg,
                 saveHeic = appSettings.saveHeic,
                 saveRaw = appSettings.saveRaw,
+                hiddenLenses = appSettings.hiddenLenses,
+                lensNames = appSettings.lensNames(),
             )
         }
 
@@ -107,10 +123,14 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 current.copy(
                     lenses = lenses,
                     troubled = memory.troubled(),
-                    // Never start on a lens known to misbehave.
+                    // Never start on a lens known to misbehave, or on one that has been hidden.
                     selectedLensId = current.selectedLensId
-                        ?: lenses.firstOrNull { it.warning == null && it.id !in memory.troubled() }
-                            ?.id
+                        ?: lenses.firstOrNull {
+                            it.warning == null &&
+                                it.id !in memory.troubled() &&
+                                it.id !in current.hiddenLenses
+                        }?.id
+                        ?: lenses.firstOrNull { it.id !in current.hiddenLenses }?.id
                         ?: lenses.firstOrNull()?.id,
                 )
             }
@@ -211,6 +231,36 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         appSettings.saveRaw = enabled
         _state.update { it.copy(saveRaw = enabled) }
         ensureFormatAllowed()
+    }
+
+    /**
+     * Take a lens out of the picker, or put it back. This is how a phone's depth and assist
+     * sensors get out of the way for good: no rule the app applies can be right on every phone,
+     * but the person holding this one knows which buttons show a picture.
+     */
+    fun setLensHidden(id: String, hidden: Boolean) {
+        val current = _state.value
+        if (hidden && current.lenses.count { it.id !in current.hiddenLenses } <= 1) {
+            showError("That is the last lens left; hide another one first")
+            return
+        }
+        val updated = if (hidden) current.hiddenLenses + id else current.hiddenLenses - id
+        appSettings.hiddenLenses = updated
+        _state.update { it.copy(hiddenLenses = updated) }
+
+        // Hiding the lens that is open would leave the picker with nothing marked; move first.
+        if (hidden && current.selectedLensId == id) {
+            _state.value.visibleLenses.firstOrNull()?.let { next ->
+                armedLensId = next.id
+                selectLens(next.id)
+            }
+        }
+    }
+
+    /** Name a lens something that means something here. Blank restores what the phone calls it. */
+    fun setLensName(id: String, name: String) {
+        appSettings.setLensName(id, name)
+        _state.update { it.copy(lensNames = appSettings.lensNames()) }
     }
 
     /** Switching a file type off must not leave the shutter set to something it may not write. */
