@@ -60,6 +60,8 @@ data class CaptureSettings(
     /** Green (negative) to magenta (positive) shift, -1..1. */
     val tint: Float = 0f,
     val aperture: Float? = null,
+    /** Whether the camera should straighten its lens on the rendered image. Never on RAW. */
+    val undistort: Boolean = true,
     val format: CaptureFormat = CaptureFormat.JPEG,
     /** Physical device rotation in degrees, from the orientation sensor. */
     val deviceRotation: Int = 0,

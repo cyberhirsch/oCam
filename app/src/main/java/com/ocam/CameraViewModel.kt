@@ -113,6 +113,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 saveRaw = appSettings.saveRaw,
                 hiddenLenses = appSettings.hiddenLenses,
                 lensNames = appSettings.lensNames(),
+                settings = it.settings.copy(undistort = appSettings.undistort),
             )
         }
 
@@ -231,6 +232,15 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         appSettings.saveRaw = enabled
         _state.update { it.copy(saveRaw = enabled) }
         ensureFormatAllowed()
+    }
+
+    /**
+     * Whether the camera straightens its own lens on the rendered image. The DNG is not affected
+     * either way - it is the sensor's own pixels, with the coefficients written alongside.
+     */
+    fun setUndistort(enabled: Boolean) {
+        appSettings.undistort = enabled
+        updateSettings { it.copy(undistort = enabled) }
     }
 
     /**

@@ -497,7 +497,11 @@ class CameraController(context: Context, private val listener: Listener) {
 
     // region request building
 
-    private fun applySettings(builder: CaptureRequest.Builder) {
+    /**
+     * @param stillCapture true for the one request that writes a file, where the camera may take
+     *   longer over the work than a preview frame allows.
+     */
+    private fun applySettings(builder: CaptureRequest.Builder, stillCapture: Boolean = false) {
         val current = settings
         val caps = capabilities
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
@@ -562,6 +566,17 @@ class CameraController(context: Context, private val listener: Listener) {
             current.aperture?.let { builder.set(CaptureRequest.LENS_APERTURE, it) }
         }
 
+        // Straightening the lens is the camera's own job: it knows its distortion coefficients,
+        // and the block that applies them sits before the JPEG encoder. It never touches RAW -
+        // a DNG is the sensor's own pixels, and carries the coefficients for a converter to use.
+        // The still is allowed to take longer over it than a preview frame can.
+        if (caps.supportsUndistort) {
+            builder.set(
+                CaptureRequest.DISTORTION_CORRECTION_MODE,
+                distortionMode(current, stillCapture),
+            )
+        }
+
         // DngCreator turns the lens shading map in the capture result into the DNG's shading
         // opcode. Without it a converter renders the corners uncorrected, so ask for the map
         // whenever a RAW file is going to be written.
@@ -570,6 +585,20 @@ class CameraController(context: Context, private val listener: Listener) {
                 CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
                 CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON,
             )
+        }
+    }
+
+    /** OFF, or the best correction this camera offers for the kind of request being built. */
+    private fun distortionMode(current: CaptureSettings, stillCapture: Boolean = false): Int {
+        if (!current.undistort) return CameraMetadata.DISTORTION_CORRECTION_MODE_OFF
+        val modes = capabilities.distortionModes
+        val high = CameraMetadata.DISTORTION_CORRECTION_MODE_HIGH_QUALITY
+        val fast = CameraMetadata.DISTORTION_CORRECTION_MODE_FAST
+        return when {
+            stillCapture && high in modes -> high
+            fast in modes -> fast
+            high in modes -> high
+            else -> CameraMetadata.DISTORTION_CORRECTION_MODE_OFF
         }
     }
 
@@ -776,7 +805,7 @@ class CameraController(context: Context, private val listener: Listener) {
         }
         try {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-            applySettings(builder)
+            applySettings(builder, stillCapture = true)
             if (settings.format.writesStill) stillReader?.let { builder.addTarget(it.surface) }
             if (settings.format.writesRaw) rawReader?.let { builder.addTarget(it.surface) }
             builder.set(CaptureRequest.JPEG_ORIENTATION, pendingOrientation)
@@ -929,7 +958,17 @@ class CameraController(context: Context, private val listener: Listener) {
     private fun setMeteringPoint(normalizedX: Float, normalizedY: Float) {
         if (maxAfRegions <= 0 && maxAeRegions <= 0) return
         val chars = characteristics ?: return
-        val array = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+        // Focus and metering rectangles are read in the corrected coordinate space while the
+        // distortion block is running, and in the pre-correction one while it is not. Using the
+        // wrong array aims the tap at the wrong part of the frame, most visibly at the edges.
+        val corrected = capabilities.supportsUndistort &&
+            distortionMode(settings) != CameraMetadata.DISTORTION_CORRECTION_MODE_OFF
+        val array = if (corrected) {
+            chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        } else {
+            chars.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE)
+                ?: chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        } ?: return
 
         val (sensorX, sensorY) = viewToSensor(normalizedX, normalizedY)
         val halfWidth = (array.width() * 0.075f).roundToInt().coerceAtLeast(1)

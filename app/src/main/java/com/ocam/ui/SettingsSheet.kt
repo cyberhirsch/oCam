@@ -35,8 +35,9 @@ import com.ocam.appVersion
 import com.ocam.camera.Lens
 
 /**
- * The standing choices: which file types to write, and what to make of this phone's cameras.
- * The per-shot choice stays on the camera screen; this only decides what it may offer.
+ * The standing choices: which file types to write, what to do about the lens, and what to make of
+ * this phone's cameras. The per-shot choice stays on the camera screen; this only decides what it
+ * may offer.
  */
 @Composable
 fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () -> Unit) {
@@ -59,14 +60,14 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 modifier = Modifier.padding(bottom = 10.dp),
             )
 
-            FormatToggle(
+            ToggleRow(
                 name = "JPEG",
                 note = "Works everywhere",
                 enabled = state.saveJpeg,
                 available = true,
                 onChange = viewModel::setSaveJpeg,
             )
-            FormatToggle(
+            ToggleRow(
                 name = "HEIC",
                 note = if (state.capabilities.supportsHeic) {
                     "Half the size of JPEG, 10 bit"
@@ -77,7 +78,7 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 available = state.capabilities.supportsHeic,
                 onChange = viewModel::setSaveHeic,
             )
-            FormatToggle(
+            ToggleRow(
                 name = "DNG",
                 note = if (state.capabilities.supportsRaw) {
                     "Raw sensor data, large"
@@ -96,6 +97,24 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 color = Color(0x88FFFFFF),
                 fontSize = 11.sp,
                 modifier = Modifier.padding(top = 12.dp),
+            )
+
+            Text(
+                text = "Geometry",
+                color = Color.White,
+                fontSize = 15.sp,
+                modifier = Modifier.padding(top = 22.dp, bottom = 4.dp),
+            )
+            ToggleRow(
+                name = "UNDISTORT",
+                note = if (state.capabilities.supportsUndistort) {
+                    "Straightens the lens on JPEG and HEIC. DNG is never touched."
+                } else {
+                    "This lens has no correction block"
+                },
+                enabled = state.settings.undistort,
+                available = state.capabilities.supportsUndistort,
+                onChange = viewModel::setUndistort,
             )
 
             Text(
@@ -146,7 +165,7 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
 }
 
 @Composable
-private fun FormatToggle(
+private fun ToggleRow(
     name: String,
     note: String,
     enabled: Boolean,

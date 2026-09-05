@@ -27,6 +27,14 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean(KEY_RAW, true)
         set(value) = prefs.edit().putBoolean(KEY_RAW, value).apply()
 
+    /**
+     * Whether the camera should straighten its lens on the JPEG or HEIC. On by default: a phone's
+     * wide lenses bend straight lines enough to be the first thing you notice.
+     */
+    var undistort: Boolean
+        get() = prefs.getBoolean(KEY_UNDISTORT, true)
+        set(value) = prefs.edit().putBoolean(KEY_UNDISTORT, value).apply()
+
     /** Lens ids the owner has taken out of the picker. */
     var hiddenLenses: Set<String>
         // The returned set must not be handed back to SharedPreferences after being mutated -
@@ -58,6 +66,7 @@ class AppSettings(context: Context) {
         const val KEY_JPEG = "save_jpeg"
         const val KEY_HEIC = "save_heic"
         const val KEY_RAW = "save_raw"
+        const val KEY_UNDISTORT = "undistort"
         const val KEY_HIDDEN = "hidden_lenses"
         const val KEY_NAME_PREFIX = "lens_name_"
     }

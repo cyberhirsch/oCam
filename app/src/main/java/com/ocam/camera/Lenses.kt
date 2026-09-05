@@ -80,6 +80,8 @@ data class LensCapabilities(
     val supportsManualWhiteBalance: Boolean,
     /** The CONTROL_AWB_MODE values this camera accepts - its own fixed illuminants. */
     val awbModes: Set<Int>,
+    /** The DISTORTION_CORRECTION_MODE values this camera accepts. */
+    val distortionModes: Set<Int>,
     val supportsRaw: Boolean,
     val supportsHeic: Boolean,
     val hasAutoFocus: Boolean,
@@ -87,6 +89,10 @@ data class LensCapabilities(
     /** The named illuminants this camera offers, in the order they are shown. */
     val whiteBalancePresets: List<WhiteBalance>
         get() = WhiteBalance.entries.filter { it != WhiteBalance.CUSTOM && it.awbMode in awbModes }
+
+    /** Whether this camera can straighten its own lens, rather than only report that it cannot. */
+    val supportsUndistort: Boolean
+        get() = distortionModes.any { it != CameraMetadata.DISTORTION_CORRECTION_MODE_OFF }
 
     val supportsManualIso: Boolean get() = supportsManualSensor && isoRange != null
     val supportsManualShutter: Boolean get() = supportsManualSensor && exposureTimeRange != null
@@ -102,6 +108,7 @@ data class LensCapabilities(
             supportsManualSensor = false,
             supportsManualWhiteBalance = false,
             awbModes = emptySet(),
+            distortionModes = emptySet(),
             supportsRaw = false,
             supportsHeic = false,
             hasAutoFocus = false,
@@ -126,6 +133,8 @@ fun CameraCharacteristics.capabilities(): LensCapabilities {
             CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING
         ),
         awbModes = get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)
+            ?.toList()?.toSet().orEmpty(),
+        distortionModes = get(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES)
             ?.toList()?.toSet().orEmpty(),
         supportsRaw = hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW) &&
             rawSize() != null,

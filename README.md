@@ -49,6 +49,17 @@ property of that sensor: gains worked out from the illuminant alone come out nea
 leave every frame green. `ADJ` is the only one this app computes, and it computes it as a
 shift away from the gains the camera itself reported for the light it was on.
 
+**Straight lines.** A phone's wide lenses bend them, and the camera knows by how much: the
+distortion correction block sits before the JPEG encoder and runs off the lens's own
+coefficients. `UNDISTORT` in settings turns it on, which is the default, at the camera's
+best quality for the shot and its fast setting for the preview. It never touches RAW - a DNG
+is the sensor's own pixels, and the coefficients travel in the file for a converter to apply.
+So a corrected JPEG and its DNG are the same photograph with different geometry, on purpose.
+
+Focus and metering rectangles move with it: those are read in the corrected coordinate space
+while correction is on and the pre-correction one while it is off, so a tap lands where it
+was aimed either way.
+
 **RAW.** The format button cycles JPEG → RAW → RAW+JPEG on lenses that support it. RAW is
 written as DNG built from the exact capture result that produced the frame, so the black
 level, colour matrices, noise profile and lens shading in the file match the shot. Files
