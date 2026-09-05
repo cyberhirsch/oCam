@@ -497,11 +497,7 @@ class CameraController(context: Context, private val listener: Listener) {
 
     // region request building
 
-    /**
-     * @param stillCapture true for the one request that writes a file, where the camera may take
-     *   longer over the work than a preview frame allows.
-     */
-    private fun applySettings(builder: CaptureRequest.Builder, stillCapture: Boolean = false) {
+    private fun applySettings(builder: CaptureRequest.Builder) {
         val current = settings
         val caps = capabilities
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
@@ -569,12 +565,8 @@ class CameraController(context: Context, private val listener: Listener) {
         // Straightening the lens is the camera's own job: it knows its distortion coefficients,
         // and the block that applies them sits before the JPEG encoder. It never touches RAW -
         // a DNG is the sensor's own pixels, and carries the coefficients for a converter to use.
-        // The still is allowed to take longer over it than a preview frame can.
         if (caps.supportsUndistort) {
-            builder.set(
-                CaptureRequest.DISTORTION_CORRECTION_MODE,
-                distortionMode(current, stillCapture),
-            )
+            builder.set(CaptureRequest.DISTORTION_CORRECTION_MODE, distortionMode(current))
         }
 
         // DngCreator turns the lens shading map in the capture result into the DNG's shading
@@ -588,16 +580,23 @@ class CameraController(context: Context, private val listener: Listener) {
         }
     }
 
-    /** OFF, or the best correction this camera offers for the kind of request being built. */
-    private fun distortionMode(current: CaptureSettings, stillCapture: Boolean = false): Int {
+    /**
+     * OFF, or the strongest correction this camera offers - on the preview as much as on the shot.
+     *
+     * FAST is not a weaker version of the same picture: the platform defines it as correction
+     * "without reducing frame rate", and explicitly allows a device to do nothing at all under
+     * that name. A preview on FAST can therefore stay bent while the shot comes out straight,
+     * which is the one thing a viewfinder must never do. HIGH_QUALITY is asked for everywhere and
+     * may cost frames; switching UNDISTORT off is how to get them back.
+     */
+    private fun distortionMode(current: CaptureSettings): Int {
         if (!current.undistort) return CameraMetadata.DISTORTION_CORRECTION_MODE_OFF
         val modes = capabilities.distortionModes
         val high = CameraMetadata.DISTORTION_CORRECTION_MODE_HIGH_QUALITY
         val fast = CameraMetadata.DISTORTION_CORRECTION_MODE_FAST
         return when {
-            stillCapture && high in modes -> high
-            fast in modes -> fast
             high in modes -> high
+            fast in modes -> fast
             else -> CameraMetadata.DISTORTION_CORRECTION_MODE_OFF
         }
     }
@@ -805,7 +804,7 @@ class CameraController(context: Context, private val listener: Listener) {
         }
         try {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-            applySettings(builder, stillCapture = true)
+            applySettings(builder)
             if (settings.format.writesStill) stillReader?.let { builder.addTarget(it.surface) }
             if (settings.format.writesRaw) rawReader?.let { builder.addTarget(it.surface) }
             builder.set(CaptureRequest.JPEG_ORIENTATION, pendingOrientation)

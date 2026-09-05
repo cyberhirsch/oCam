@@ -108,7 +108,8 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
             ToggleRow(
                 name = "UNDISTORT",
                 note = if (state.capabilities.supportsUndistort) {
-                    "Straightens the lens on JPEG and HEIC. DNG is never touched."
+                    "Straightens the lens, on the preview as well as on JPEG and HEIC. " +
+                        "DNG always keeps the raw geometry."
                 } else {
                     "This lens has no correction block"
                 },

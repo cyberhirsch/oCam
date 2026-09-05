@@ -51,10 +51,17 @@ shift away from the gains the camera itself reported for the light it was on.
 
 **Straight lines.** A phone's wide lenses bend them, and the camera knows by how much: the
 distortion correction block sits before the JPEG encoder and runs off the lens's own
-coefficients. `UNDISTORT` in settings turns it on, which is the default, at the camera's
-best quality for the shot and its fast setting for the preview. It never touches RAW - a DNG
-is the sensor's own pixels, and the coefficients travel in the file for a converter to apply.
-So a corrected JPEG and its DNG are the same photograph with different geometry, on purpose.
+coefficients. `UNDISTORT` in settings turns it on, which is the default, and asks for the
+camera's best correction on the preview as well as on the shot - the viewfinder has to show
+the picture that is about to be written. Note that the platform's FAST mode is not a lighter
+version of the same result: it is defined as correction that costs no frame rate, and a
+device is allowed to do nothing at all under that name, which is how a preview stays bent
+while the JPEG comes out straight. Correction can cost frames; switching `UNDISTORT` off is
+how to get them back.
+
+It never touches RAW - a DNG is the sensor's own pixels, and the coefficients travel in the
+file for a converter to apply. So a corrected JPEG and its DNG are the same photograph with
+different geometry, on purpose.
 
 Focus and metering rectangles move with it: those are read in the corrected coordinate space
 while correction is on and the pre-correction one while it is off, so a tap lands where it
