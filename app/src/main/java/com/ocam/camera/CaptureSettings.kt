@@ -62,6 +62,8 @@ data class CaptureSettings(
     val aperture: Float? = null,
     /** Whether the camera should straighten its lens on the rendered image. Never on RAW. */
     val undistort: Boolean = true,
+    /** Whether to write where the camera was and which way it pointed into the files. */
+    val recordPose: Boolean = true,
     val format: CaptureFormat = CaptureFormat.JPEG,
     /** Physical device rotation in degrees, from the orientation sensor. */
     val deviceRotation: Int = 0,

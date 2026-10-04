@@ -90,6 +90,9 @@ class CameraController(context: Context, private val listener: Listener) {
     private val manager = appContext.getSystemService(CameraManager::class.java)
     private val memory = LensMemory(appContext)
 
+    /** Where the camera is and which way it points, for the files that want to carry it. */
+    val pose = PoseTracker(appContext)
+
     private val cameraThread = HandlerThread("camera").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
     private val cameraExecutor = Executor { command -> cameraHandler.post(command) }
@@ -143,7 +146,12 @@ class CameraController(context: Context, private val listener: Listener) {
      * the save, because a file that arrives late must not be named after the shot that came
      * after it, or given the orientation the phone has by then.
      */
-    private class Shot(val baseName: String, val orientation: Int, val heic: Boolean)
+    private class Shot(
+        val baseName: String,
+        val orientation: Int,
+        val heic: Boolean,
+        val pose: Pose,
+    )
 
     @Volatile private var shot: Shot? = null
     @Volatile private var capturing = false
@@ -756,7 +764,9 @@ class CameraController(context: Context, private val listener: Listener) {
         listener.onCaptureBusy(true)
         baseName = PhotoStore.newBaseName(System.currentTimeMillis())
         pendingOrientation = outputOrientation()
-        shot = Shot(baseName, pendingOrientation, current.format.usesHeic)
+        // Read once, here: the phone keeps moving while the file is being written.
+        val here = if (current.recordPose) pose.current() else Pose.NONE
+        shot = Shot(baseName, pendingOrientation, current.format.usesHeic, here)
         pendingSaves.set((if (willWriteJpeg) 1 else 0) + (if (willWriteRaw) 1 else 0))
         cameraHandler.postDelayed(convergenceTimeout, CONVERGENCE_TIMEOUT_MS)
 
@@ -826,6 +836,9 @@ class CameraController(context: Context, private val listener: Listener) {
             if (settings.format.writesRaw) rawReader?.let { builder.addTarget(it.surface) }
             builder.set(CaptureRequest.JPEG_ORIENTATION, pendingOrientation)
             builder.set(CaptureRequest.JPEG_QUALITY, 97.toByte())
+            // The encoder writes the position into the file's own EXIF; nothing else here can
+            // reach inside a HEIC to add it afterwards.
+            shot?.pose?.location?.let { builder.set(CaptureRequest.JPEG_GPS_LOCATION, it) }
             active.stopRepeating()
             active.capture(builder.build(), stillCallback, cameraHandler)
             // From here on the wait is on the camera and the encoder. The convergence clock is
@@ -914,12 +927,13 @@ class CameraController(context: Context, private val listener: Listener) {
         val pending = shot
         val name = pending?.baseName ?: baseName
         val heic = pending?.heic ?: settings.format.usesHeic
+        val here = pending?.pose ?: Pose.NONE
         try {
             val buffer = image.planes[0].buffer
             val bytes = ByteArray(buffer.remaining())
             buffer.get(bytes)
             image.close()
-            onFileSaved(PhotoStore.saveStill(appContext, bytes, name, heic))
+            onFileSaved(PhotoStore.saveStill(appContext, bytes, name, heic, here))
         } catch (t: Throwable) {
             runCatching { image.close() }
             onSaveFailed(if (heic) "HEIC" else "JPEG", t)
@@ -965,10 +979,11 @@ class CameraController(context: Context, private val listener: Listener) {
             val pending = shot
             val name = pending?.baseName ?: baseName
             val orientation = pending?.orientation ?: pendingOrientation
+            val here = pending?.pose ?: Pose.NONE
             ioHandler.post {
                 try {
                     val saved = PhotoStore.saveDng(
-                        appContext, chars, readyResult, readyImage, orientation, name
+                        appContext, chars, readyResult, readyImage, orientation, name, here
                     )
                     onFileSaved(saved)
                 } catch (t: Throwable) {

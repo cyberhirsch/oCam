@@ -24,7 +24,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # packages: '' because the action's default list still asks for "tools", which Google
+      # removed from the SDK repository - sdkmanager exits 1 and takes the build with it. The
+      # packages this build actually needs are installed in the next step.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Install SDK packages
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"

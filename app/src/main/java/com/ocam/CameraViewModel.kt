@@ -52,6 +52,8 @@ data class CameraUiState(
     val diagnostics: String? = null,
     /** Lenses that failed or took the camera down on this device. */
     val troubled: Set<String> = emptySet(),
+    /** Whether the owner has granted a position; without it only the heading can be written. */
+    val locationAllowed: Boolean = false,
     /** Lenses the owner has taken out of the picker, and the names they gave them. */
     val hiddenLenses: Set<String> = emptySet(),
     val lensNames: Map<String, String> = emptyMap(),
@@ -113,7 +115,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 saveRaw = appSettings.saveRaw,
                 hiddenLenses = appSettings.hiddenLenses,
                 lensNames = appSettings.lensNames(),
-                settings = it.settings.copy(undistort = appSettings.undistort),
+                locationAllowed = controller.pose.locationAllowed,
+                settings = it.settings.copy(
+                    undistort = appSettings.undistort,
+                    recordPose = appSettings.recordPose,
+                ),
             )
         }
 
@@ -154,12 +160,15 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
 
     fun onResume() {
         resumed = true
+        // Position and heading are listened to only while the camera is on screen.
+        if (_state.value.settings.recordPose) controller.pose.start()
         openIfReady()
     }
 
     fun onPause() {
         resumed = false
         openedLensId = null
+        controller.pose.stop()
         controller.close()
     }
 
@@ -241,6 +250,24 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     fun setUndistort(enabled: Boolean) {
         appSettings.undistort = enabled
         updateSettings { it.copy(undistort = enabled) }
+    }
+
+    /**
+     * Whether photographs carry where they were taken and which way the camera pointed. Switching
+     * it off stops the listening as well as the writing - there is no reason to hold a position
+     * the files will not be given.
+     */
+    fun setRecordPose(enabled: Boolean) {
+        appSettings.recordPose = enabled
+        updateSettings { it.copy(recordPose = enabled) }
+        if (enabled && resumed) controller.pose.start() else if (!enabled) controller.pose.stop()
+        _state.update { it.copy(locationAllowed = controller.pose.locationAllowed) }
+    }
+
+    /** The owner answered the location prompt; a yes means there is a position to be had now. */
+    fun onLocationPermissionResult() {
+        if (_state.value.settings.recordPose && resumed) controller.pose.start()
+        _state.update { it.copy(locationAllowed = controller.pose.locationAllowed) }
     }
 
     /**

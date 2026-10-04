@@ -1,5 +1,8 @@
 package com.ocam.ui
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +45,10 @@ import com.ocam.camera.Lens
 @Composable
 fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () -> Unit) {
     val context = LocalContext.current
+    // The location prompt appears when the owner asks for the feature, not when the app starts.
+    val askForLocation = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { viewModel.onLocationPermissionResult() }
     Dialog(onDismissRequest = onClose) {
         Column(
             modifier = Modifier
@@ -116,6 +123,37 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 enabled = state.settings.undistort,
                 available = state.capabilities.supportsUndistort,
                 onChange = viewModel::setUndistort,
+            )
+
+            Text(
+                text = "Where and which way",
+                color = Color.White,
+                fontSize = 15.sp,
+                modifier = Modifier.padding(top = 22.dp, bottom = 4.dp),
+            )
+            ToggleRow(
+                name = "GPS & COMPASS",
+                note = when {
+                    !state.settings.recordPose ->
+                        "Photographs carry no position and no heading"
+                    state.locationAllowed ->
+                        "Position in every file; heading and tilt in JPEG and DNG"
+                    else ->
+                        "Heading and tilt only - switch on again to allow location"
+                },
+                enabled = state.settings.recordPose,
+                available = true,
+                onChange = { wanted ->
+                    viewModel.setRecordPose(wanted)
+                    if (wanted && !state.locationAllowed) {
+                        askForLocation.launch(
+                            arrayOf(
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                            )
+                        )
+                    }
+                },
             )
 
             Text(

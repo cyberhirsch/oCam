@@ -35,6 +35,15 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean(KEY_UNDISTORT, true)
         set(value) = prefs.edit().putBoolean(KEY_UNDISTORT, value).apply()
 
+    /**
+     * Whether to write position and heading into the photographs. On by default, but it only has
+     * anything to write once the location permission has been granted - and it can be switched
+     * off here without touching the permission.
+     */
+    var recordPose: Boolean
+        get() = prefs.getBoolean(KEY_POSE, true)
+        set(value) = prefs.edit().putBoolean(KEY_POSE, value).apply()
+
     /** Lens ids the owner has taken out of the picker. */
     var hiddenLenses: Set<String>
         // The returned set must not be handed back to SharedPreferences after being mutated -
@@ -67,6 +76,7 @@ class AppSettings(context: Context) {
         const val KEY_HEIC = "save_heic"
         const val KEY_RAW = "save_raw"
         const val KEY_UNDISTORT = "undistort"
+        const val KEY_POSE = "record_pose"
         const val KEY_HIDDEN = "hidden_lenses"
         const val KEY_NAME_PREFIX = "lens_name_"
     }

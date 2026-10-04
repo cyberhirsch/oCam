@@ -67,6 +67,29 @@ Focus and metering rectangles move with it: those are read in the corrected coor
 while correction is on and the pre-correction one while it is off, so a tap lands where it
 was aimed either way.
 
+**Where and which way.** `GPS & COMPASS` writes the full pose of the camera into the
+photograph: latitude, longitude and altitude from the location providers, and the direction
+the lens was pointing - heading, elevation and roll - from the rotation vector, which fuses
+magnetometer, accelerometer and gyroscope and is steadier than a compass alone.
+
+The angles describe the lens, not the screen. They are taken from the rotation matrix rather
+than from `getOrientation`, whose azimuth is the heading of the phone's top edge - and that
+edge points at the sky exactly when the phone is held up to photograph something, where the
+heading is both degenerate and jumpy. The matrix carries the device's axes into the world, so
+the lens direction is its -z axis and the angles fall out of it in any posture. Heading is
+corrected from magnetic to true north with the local declination when there is a fix to
+compute it from, and says which one it used.
+
+Where it lands differs by container, because of what each one can be written into: the camera
+stamps the position into the JPEG and the HEIC itself, from the capture request, and
+`DngCreator` writes it into the DNG. The angles go into the JPEG as `GPSImgDirection` plus a
+`UserComment` line, and into the DNG as its description. A HEIC gets position only - nothing
+here can reopen that container to add the rest.
+
+It is off until asked for: the location prompt appears when the switch is turned on, not when
+the app starts, and the sensors are listened to only while the camera is on screen. Switching
+it off stops both the listening and the writing.
+
 **RAW.** The format button cycles JPEG → RAW → RAW+JPEG on lenses that support it. RAW is
 written as DNG built from the exact capture result that produced the frame, so the black
 level, colour matrices, noise profile and lens shading in the file match the shot. Files
