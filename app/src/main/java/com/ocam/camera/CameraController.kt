@@ -37,8 +37,11 @@ private const val TAG = "CameraController"
 /** How long to wait for AF/AE to settle before taking the shot anyway. */
 private const val CONVERGENCE_TIMEOUT_MS = 2_500L
 
-/** Safety net so a dropped frame cannot leave the shutter button stuck. */
-private const val SAVE_TIMEOUT_MS = 10_000L
+/**
+ * Safety net so a camera that never delivers cannot leave the shutter stuck. Long on purpose: it
+ * has to outlast a full size DNG, which takes seconds to write, or it cuts off its own save.
+ */
+private const val DELIVERY_TIMEOUT_MS = 25_000L
 
 /** Switching between physical lenses of one logical camera can briefly report CAMERA_IN_USE. */
 private const val MAX_OPEN_ATTEMPTS = 4
@@ -134,6 +137,15 @@ class CameraController(context: Context, private val listener: Listener) {
     @Volatile private var facing = CameraCharacteristics.LENS_FACING_BACK
     @Volatile private var settings = CaptureSettings()
     @Volatile private var baseName = ""
+
+    /**
+     * What one press of the shutter is writing. Fixed when the shutter is pressed and carried to
+     * the save, because a file that arrives late must not be named after the shot that came
+     * after it, or given the orientation the phone has by then.
+     */
+    private class Shot(val baseName: String, val orientation: Int, val heic: Boolean)
+
+    @Volatile private var shot: Shot? = null
     @Volatile private var capturing = false
 
     private val pendingSaves = AtomicInteger(0)
@@ -297,7 +309,7 @@ class CameraController(context: Context, private val listener: Listener) {
 
     private fun closeInternal() {
         cameraHandler.removeCallbacks(convergenceTimeout)
-        cameraHandler.removeCallbacks(saveTimeout)
+        cameraHandler.removeCallbacks(deliveryTimeout)
         runCatching { session?.close() }
         session = null
         runCatching { device?.close() }
@@ -744,9 +756,9 @@ class CameraController(context: Context, private val listener: Listener) {
         listener.onCaptureBusy(true)
         baseName = PhotoStore.newBaseName(System.currentTimeMillis())
         pendingOrientation = outputOrientation()
+        shot = Shot(baseName, pendingOrientation, current.format.usesHeic)
         pendingSaves.set((if (willWriteJpeg) 1 else 0) + (if (willWriteRaw) 1 else 0))
         cameraHandler.postDelayed(convergenceTimeout, CONVERGENCE_TIMEOUT_MS)
-        cameraHandler.postDelayed(saveTimeout, SAVE_TIMEOUT_MS)
 
         // Nothing to converge: the exposure and the focus distance are already what they will
         // be. Only a lens that cannot be told either has to be waited for.
@@ -786,10 +798,15 @@ class CameraController(context: Context, private val listener: Listener) {
         if (capturing && state != State.CAPTURING) captureStill()
     }
 
-    private val saveTimeout = Runnable {
+    /**
+     * The camera never delivered. Let go of the shutter so the app is usable again, but leave any
+     * half-finished pairing alone: throwing the frame away here is how a slow DNG write turned
+     * into a photograph that was taken and never written.
+     */
+    private val deliveryTimeout = Runnable {
         if (capturing) {
-            listener.onError("Capture timed out")
-            finishCapture()
+            listener.onError("The camera did not deliver the frame")
+            finishCapture(dropPending = false)
         }
     }
 
@@ -811,6 +828,11 @@ class CameraController(context: Context, private val listener: Listener) {
             builder.set(CaptureRequest.JPEG_QUALITY, 97.toByte())
             active.stopRepeating()
             active.capture(builder.build(), stillCallback, cameraHandler)
+            // From here on the wait is on the camera and the encoder. The convergence clock is
+            // done; this one only exists so a camera that never delivers cannot leave the shutter
+            // stuck, and it is deliberately long - a full size DNG takes seconds to write.
+            cameraHandler.removeCallbacks(deliveryTimeout)
+            cameraHandler.postDelayed(deliveryTimeout, DELIVERY_TIMEOUT_MS)
         } catch (e: Exception) {
             Log.e(TAG, "Still capture failed", e)
             listener.onError("Capture failed: ${e.javaClass.simpleName}")
@@ -858,11 +880,16 @@ class CameraController(context: Context, private val listener: Listener) {
         runCatching { active.setRepeatingRequest(builder.build(), previewCallback, cameraHandler) }
     }
 
-    private fun finishCapture() {
+    /**
+     * @param dropPending whether to discard a RAW frame still waiting for its capture result.
+     *   True when the shot is over for good; false when the app is only letting go of the shutter
+     *   and a late frame should still be allowed to land.
+     */
+    private fun finishCapture(dropPending: Boolean = true) {
         cameraHandler.removeCallbacks(convergenceTimeout)
-        cameraHandler.removeCallbacks(saveTimeout)
+        cameraHandler.removeCallbacks(deliveryTimeout)
         pendingSaves.set(0)
-        rawPending.clear()
+        if (dropPending) rawPending.clear()
         capturing = false
         state = State.PREVIEW
         listener.onCaptureBusy(false)
@@ -883,8 +910,10 @@ class CameraController(context: Context, private val listener: Listener) {
 
     private val stillAvailable = ImageReader.OnImageAvailableListener { reader ->
         val image = reader.acquireNextImage() ?: return@OnImageAvailableListener
-        val name = baseName
-        val heic = settings.format.usesHeic
+        // The shot this frame belongs to, not whatever the app is set to by the time it lands.
+        val pending = shot
+        val name = pending?.baseName ?: baseName
+        val heic = pending?.heic ?: settings.format.usesHeic
         try {
             val buffer = image.planes[0].buffer
             val bytes = ByteArray(buffer.remaining())
@@ -933,8 +962,9 @@ class CameraController(context: Context, private val listener: Listener) {
                 runCatching { readyImage.close() }
                 return
             }
-            val name = baseName
-            val orientation = pendingOrientation
+            val pending = shot
+            val name = pending?.baseName ?: baseName
+            val orientation = pending?.orientation ?: pendingOrientation
             ioHandler.post {
                 try {
                     val saved = PhotoStore.saveDng(
