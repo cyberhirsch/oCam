@@ -44,6 +44,13 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean(KEY_POSE, true)
         set(value) = prefs.edit().putBoolean(KEY_POSE, value).apply()
 
+    /** The film simulation in use, by file name, or null while the camera is left alone. */
+    var lutName: String?
+        get() = prefs.getString(KEY_LUT, null)
+        set(value) = prefs.edit().apply {
+            if (value == null) remove(KEY_LUT) else putString(KEY_LUT, value)
+        }.apply()
+
     /** Lens ids the owner has taken out of the picker. */
     var hiddenLenses: Set<String>
         // The returned set must not be handed back to SharedPreferences after being mutated -
@@ -77,6 +84,7 @@ class AppSettings(context: Context) {
         const val KEY_RAW = "save_raw"
         const val KEY_UNDISTORT = "undistort"
         const val KEY_POSE = "record_pose"
+        const val KEY_LUT = "lut_name"
         const val KEY_HIDDEN = "hidden_lenses"
         const val KEY_NAME_PREFIX = "lens_name_"
     }

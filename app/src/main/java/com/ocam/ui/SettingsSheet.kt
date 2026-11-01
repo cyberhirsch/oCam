@@ -49,6 +49,9 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
     val askForLocation = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { viewModel.onLocationPermissionResult() }
+    val pickLut = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let(viewModel::importLut) }
     Dialog(onDismissRequest = onClose) {
         Column(
             modifier = Modifier
@@ -125,6 +128,72 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 onChange = viewModel::setUndistort,
             )
 
+            Text(
+                text = "Film simulation",
+                color = Color.White,
+                fontSize = 15.sp,
+                modifier = Modifier.padding(top = 22.dp, bottom = 4.dp),
+            )
+            Text(
+                text = "A .cube lookup table, on the preview and on the JPEG. DNG is never " +
+                    "graded - it is the sensor's own pixels - and nor is HEIC, which Android " +
+                    "can decode but has no public way to write back.",
+                color = Color(0x88FFFFFF),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FlatButton(
+                    label = "NONE",
+                    active = state.lutName == null,
+                    onClick = { viewModel.setLut(null) },
+                )
+                FlatButton(
+                    label = "ADD",
+                    active = false,
+                    // Anything, because a .cube has no mime type of its own and filtering by one
+                    // hides the file on most phones.
+                    onClick = { pickLut.launch(arrayOf("*/*")) },
+                )
+            }
+            state.luts.forEach { lut ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FlatButton(
+                        label = if (state.lutName == lut.name) "ON" else "OFF",
+                        active = state.lutName == lut.name,
+                        onClick = {
+                            viewModel.setLut(if (state.lutName == lut.name) null else lut.name)
+                        },
+                    )
+                    Text(
+                        text = lut.label,
+                        color = if (state.lutName == lut.name) Color.White else Color(0xAAFFFFFF),
+                        fontSize = 13.sp,
+                        modifier = Modifier.weight(1f).padding(start = 12.dp),
+                    )
+                    FlatButton(
+                        label = "DEL",
+                        active = false,
+                        onClick = { viewModel.deleteLut(lut.name) },
+                    )
+                }
+            }
+            if (state.luts.isEmpty()) {
+                Text(
+                    text = "No tables yet. ADD picks one, or drop .cube files into\n" +
+                        viewModel.lutFolder(),
+                    color = Color(0x77FFFFFF),
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
             Text(
                 text = "Where and which way",
                 color = Color.White,

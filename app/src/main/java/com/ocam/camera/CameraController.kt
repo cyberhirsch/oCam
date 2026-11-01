@@ -27,6 +27,8 @@ import android.util.Log
 import android.util.Size
 import android.view.Surface
 import com.ocam.io.PhotoStore
+import com.ocam.lut.LutPipeline
+import com.ocam.lut.StillGrader
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -94,6 +96,13 @@ class CameraController(context: Context, private val listener: Listener) {
 
     /** Where the camera is and which way it points, for the files that want to carry it. */
     val pose = PoseTracker(appContext)
+
+    /**
+     * The film simulation, while one is chosen. The preview is already graded through it - the
+     * camera draws into it instead of into the view - and the still is put through the same
+     * table here, so the file matches what was framed.
+     */
+    @Volatile var film: LutPipeline? = null
 
     private val cameraThread = HandlerThread("camera").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
@@ -177,10 +186,15 @@ class CameraController(context: Context, private val listener: Listener) {
         }
     }
 
-    fun close() {
+    /**
+     * @param then run once the lens is really shut, on the camera thread. Anything that owns the
+     *   surface the camera was drawing into has to wait for this before letting go of it.
+     */
+    fun close(then: (() -> Unit)? = null) {
         cameraHandler.post {
             cameraHandler.removeCallbacksAndMessages(OPEN_RETRY_TOKEN)
             closeInternal()
+            then?.invoke()
         }
     }
 
@@ -1054,9 +1068,11 @@ class CameraController(context: Context, private val listener: Listener) {
         val here = pending?.pose ?: Pose.NONE
         try {
             val buffer = image.planes[0].buffer
-            val bytes = ByteArray(buffer.remaining())
-            buffer.get(bytes)
+            val raw = ByteArray(buffer.remaining())
+            buffer.get(raw)
             image.close()
+            // A simulation that cannot be applied leaves the photograph as the camera made it.
+            val bytes = film?.let { StillGrader.grade(raw, heic, it) } ?: raw
             onFileSaved(PhotoStore.saveStill(appContext, bytes, name, heic, here))
         } catch (t: Throwable) {
             runCatching { image.close() }

@@ -2,6 +2,7 @@ package com.ocam
 
 import android.app.Application
 import android.graphics.SurfaceTexture
+import android.net.Uri
 import android.hardware.camera2.CameraManager
 import android.util.Size
 import androidx.lifecycle.AndroidViewModel
@@ -16,6 +17,9 @@ import com.ocam.camera.CaptureSettings
 import com.ocam.camera.Lens
 import com.ocam.camera.LensCapabilities
 import com.ocam.camera.Subject
+import com.ocam.lut.LutFile
+import com.ocam.lut.LutPipeline
+import com.ocam.lut.LutStore
 import com.ocam.camera.WhiteBalance
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,6 +61,9 @@ data class CameraUiState(
     val locationAllowed: Boolean = false,
     /** The face focus is following, in preview coordinates, while eye focus is on. */
     val subject: Subject? = null,
+    /** The film simulations on this phone, and the one in use. */
+    val luts: List<LutFile> = emptyList(),
+    val lutName: String? = null,
     /** Lenses the owner has taken out of the picker, and the names they gave them. */
     val hiddenLenses: Set<String> = emptySet(),
     val lensNames: Map<String, String> = emptyMap(),
@@ -102,6 +109,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     private val appSettings = AppSettings(application)
     private var armedLensId: String? = null
 
+    private val lutStore = LutStore(application)
+    /** Alive only while a simulation is chosen; the camera draws through it when it is. */
+    private var film: LutPipeline? = null
+    private var filmTexture: SurfaceTexture? = null
+
     init {
         // Before touching a camera: if a lens was mid-open when the app last went away, that is
         // the one that took it down. Some firmware needs a reboot after this, so it must not be
@@ -119,6 +131,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 hiddenLenses = appSettings.hiddenLenses,
                 lensNames = appSettings.lensNames(),
                 locationAllowed = controller.pose.locationAllowed,
+                luts = lutStore.list(),
+                lutName = appSettings.lutName?.takeIf { name ->
+                    // A simulation whose file has been deleted is no longer a choice.
+                    lutStore.find(name) != null
+                },
                 settings = it.settings.copy(
                     undistort = appSettings.undistort,
                     recordPose = appSettings.recordPose,
@@ -172,21 +189,79 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         resumed = false
         openedLensId = null
         controller.pose.stop()
-        controller.close()
+        // The GL context belongs to this screen; holding it in the background would keep the
+        // camera's texture alive for nothing. It goes after the lens, not before.
+        controller.close {
+            viewModelScope.launch { releaseFilm() }
+        }
     }
 
     override fun onCleared() {
         super.onCleared()
+        releaseFilm()
         controller.release()
     }
 
     /** Opening is driven by three independent events, so make it idempotent. */
     private fun openIfReady() {
-        val texture = surface ?: return
+        val view = surface ?: return
         val lensId = _state.value.selectedLensId ?: return
         if (!resumed || openedLensId == lensId) return
         openedLensId = lensId
-        controller.open(lensId, texture)
+        controller.open(lensId, cameraTexture(view))
+    }
+
+    /**
+     * What the camera should draw into: the view itself, or the film simulation that draws into
+     * the view. Without a simulation nothing of this app is between the camera and the screen,
+     * which is why the pipeline is built and torn down rather than left running empty.
+     */
+    private fun cameraTexture(view: SurfaceTexture): SurfaceTexture {
+        val name = _state.value.lutName ?: return view
+        film?.let { return filmTexture ?: view }
+
+        val lut = lutStore.load(name) ?: run {
+            showError("Cannot read $name")
+            return view
+        }
+        val pipeline = LutPipeline(lut)
+        val texture = pipeline.start(
+            view,
+            _state.value.previewWidth,
+            _state.value.previewHeight,
+        )
+        if (texture == null) {
+            pipeline.release()
+            showError("This phone cannot run the film simulation")
+            return view
+        }
+        film = pipeline
+        filmTexture = texture
+        controller.film = pipeline
+        return texture
+    }
+
+    /** Let go of the simulation, so the camera can go back to drawing into the view directly. */
+    private fun releaseFilm() {
+        controller.film = null
+        film?.release()
+        film = null
+        filmTexture = null
+    }
+
+    /**
+     * Reopen the lens, which is what changing the surface the camera draws into needs. The old
+     * simulation is not let go of until the lens is really shut: releasing a texture the camera
+     * is still writing into is a crash waiting for a slow phone.
+     */
+    private fun restartPreview() {
+        openedLensId = null
+        controller.close {
+            viewModelScope.launch {
+                releaseFilm()
+                openIfReady()
+            }
+        }
     }
 
     // endregion
@@ -330,6 +405,40 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     override fun onMeteredExposure(iso: Int, exposureTimeNs: Long) {
         updateSettings { it.copy(iso = iso, exposureTimeNs = exposureTimeNs) }
     }
+
+    /**
+     * Choose a film simulation, or none. The camera has to be reopened either way: with one the
+     * camera draws into the simulation, without one it draws into the view, and that is a
+     * different surface rather than a different setting.
+     */
+    fun setLut(name: String?) {
+        appSettings.lutName = name
+        _state.update { it.copy(lutName = name, luts = lutStore.list()) }
+        restartPreview()
+    }
+
+    /** Copy a picked .cube in and use it. */
+    fun importLut(uri: Uri) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { lutStore.import(uri) } }
+            result
+                .onSuccess { name ->
+                    _state.update { it.copy(luts = lutStore.list()) }
+                    onStatus("Added $name")
+                    setLut(name)
+                }
+                .onFailure { showError(it.message ?: "That file is not a .cube") }
+        }
+    }
+
+    fun deleteLut(name: String) {
+        lutStore.delete(name)
+        if (_state.value.lutName == name) setLut(null)
+        else _state.update { it.copy(luts = lutStore.list()) }
+    }
+
+    /** Where to drop .cube files by hand, shown in settings so the folder can be found. */
+    fun lutFolder(): String = lutStore.folder.absolutePath
 
     /** One of the camera's own fixed lights. Picking one drops any fine tuning done by hand. */
     fun setWhiteBalance(preset: WhiteBalance) {
@@ -512,6 +621,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
             )
         }
         controller.updateSettings(settings)
+        // The lens picks its own preview size, so the simulation only learns the real one here.
+        film?.resize(previewSize.width, previewSize.height)
     }
 
     override fun onLiveValues(

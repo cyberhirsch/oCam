@@ -35,7 +35,7 @@ Each is labelled with its zoom factor relative to the default lens on that side,
 | Control | What it is |
 | --- | --- |
 | ISO / SEC | sensitivity and shutter over the sensor's full reported range |
-| FOCUS | distance from infinity to the lens minimum; tap the frame to look once |
+| FOCUS | distance from infinity to the lens minimum; tap the frame to look once, or `EYE` to follow one |
 | WB | the camera's own lights - `TUN` `DAY` `SHD` - or `ADJ` to set it by hand |
 
 There is no exposure compensation and no zebra: the first only biases a meter that is not
@@ -89,6 +89,25 @@ here can reopen that container to add the rest.
 It is off until asked for: the location prompt appears when the switch is turned on, not when
 the app starts, and the sensors are listened to only while the camera is on screen. Switching
 it off stops both the listening and the writing.
+
+**Film simulation.** A `.cube` lookup table, chosen in settings, applied to the preview and to
+the JPEG. `ADD` picks one through the file picker and copies it in; files dropped into
+`Android/data/com.ocam/files/LUTs` by hand appear there too.
+
+Without one the camera writes its frames straight into the view and this app never touches a
+pixel. With one the camera draws into a texture instead, a fragment shader looks every pixel
+up in the table as a 3D texture - which is what makes the interpolation between entries free,
+since that is exactly what linear filtering on a 3D texture is - and the result goes to the
+screen. The still goes through the same shader afterwards, in tiles, so a fifty megapixel
+photograph neither exceeds the maximum texture size nor needs more copies of itself in memory
+than necessary. Choosing a simulation reopens the lens, because it changes which surface the
+camera draws into rather than a setting on it.
+
+DNG is never graded: it is the sensor's own pixels, and a lookup table is a development
+choice that belongs after them. Nor is HEIC - Android can decode one but offers no public way
+to write one back, so a HEIC is saved exactly as the camera made it. If grading fails for any
+reason, including running out of memory on a large still, the photograph is written ungraded
+rather than not at all.
 
 **RAW.** The format button cycles JPEG → RAW → RAW+JPEG on lenses that support it. RAW is
 written as DNG built from the exact capture result that produced the frame, so the black

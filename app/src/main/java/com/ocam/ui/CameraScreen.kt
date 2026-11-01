@@ -444,6 +444,7 @@ private fun TopStrip(
             if (lens != null) {
                 Text(
                     text = "${lens.facingLabel} ${state.lensLabel(lens)} · ${lens.detailLabel}" +
+                        (state.lutName?.let { " · ${it.removeSuffix(".cube")}" } ?: "") +
                         if (lens.supportsRaw) " · raw" else "",
                     color = Color(0x99FFFFFF),
                     fontSize = 10.sp,
