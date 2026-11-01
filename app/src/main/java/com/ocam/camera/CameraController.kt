@@ -76,6 +76,8 @@ class CameraController(context: Context, private val listener: Listener) {
         fun onMeteredExposure(iso: Int, exposureTimeNs: Long)
         /** Autofocus found a subject while in manual focus; this is the distance it settled on. */
         fun onFocusRacked(diopters: Float)
+        /** The face focus is following, or null when there is none to follow. */
+        fun onSubject(subject: Subject?)
         fun onCaptureBusy(busy: Boolean)
         fun onStatus(message: String)
         fun onError(message: String)
@@ -121,6 +123,10 @@ class CameraController(context: Context, private val listener: Listener) {
     private var maxAeRegions = 0
     private var shadingMapAvailable = false
     private var rackingFocus = false
+    /** Where the eye was when the focus region was last sent, and when that was. */
+    private var subjectPoint: Pair<Float, Float>? = null
+    private var subjectRegionSentMs = 0L
+    private var lastSubject: Subject? = null
     /** Whether the search now running was asked for by a tap, and so worth reporting on. */
     private var rackAnnounces = false
     private var meteringRegion: MeteringRectangle? = null
@@ -330,6 +336,13 @@ class CameraController(context: Context, private val listener: Listener) {
         pendingSaves.set(0)
         capturing = false
         state = State.PREVIEW
+        // Nothing is being followed with the lens shut; leaving the last face on screen would
+        // draw a sight over a preview that is no longer live.
+        if (lastSubject != null) {
+            lastSubject = null
+            subjectPoint = null
+            listener.onSubject(null)
+        }
     }
 
     private fun closeReaders() {
@@ -537,9 +550,28 @@ class CameraController(context: Context, private val listener: Listener) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
         }
 
-        // Focus likewise: the only time the lens searches is when it has been told to, by a tap
-        // or by the one look it takes when a lens opens, and the distance it lands on is kept.
-        if (rackingFocus && caps.hasAutoFocus) {
+        // Looking for faces costs nothing while nothing is being followed, so it is only asked
+        // for while it is being used.
+        val following = current.eyeFocus && caps.supportsFaceFocus
+        if (caps.maxFaces > 0) {
+            builder.set(
+                CaptureRequest.STATISTICS_FACE_DETECT_MODE,
+                if (following) caps.bestFaceDetectMode
+                else CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF,
+            )
+        }
+
+        // Following an eye is the one thing that moves focus by itself, and only while it is
+        // switched on: the lens stays on the subject rather than on a distance.
+        if (following) {
+            builder.set(
+                CaptureRequest.CONTROL_AF_MODE,
+                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+            )
+            subjectRegion()?.takeIf { maxAfRegions > 0 }?.let {
+                builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(it))
+            }
+        } else if (rackingFocus && caps.hasAutoFocus) {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
             meteringRegion?.takeIf { maxAfRegions > 0 }?.let {
                 builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(it))
@@ -637,6 +669,7 @@ class CameraController(context: Context, private val listener: Listener) {
             result: TotalCaptureResult,
         ) {
             observe(result)
+            readSubject(result)
             publishLiveValues(result)
             advance(result)
         }
@@ -730,6 +763,97 @@ class CameraController(context: Context, private val listener: Listener) {
         metering = false
         listener.onMeteredExposure(iso, exposure)
     }
+
+    /**
+     * The face to follow, and the point on it to focus. The biggest face wins: in a photograph of
+     * several people the one nearest the camera is the one being photographed.
+     *
+     * Where the camera reports eyes, focus goes on an eye - the near one, which is the one a
+     * portrait is judged by. Where it only reports a rectangle, focus goes a third of the way
+     * down it, which is roughly where eyes are in a face.
+     */
+    private fun readSubject(result: CaptureResult) {
+        if (!settings.eyeFocus || !capabilities.supportsFaceFocus) {
+            if (lastSubject != null) {
+                lastSubject = null
+                subjectPoint = null
+                listener.onSubject(null)
+            }
+            return
+        }
+        val array = regionArray() ?: return
+        val faces = result.get(CaptureResult.STATISTICS_FACES)
+            ?.filter { it.bounds.width() > 0 && it.bounds.height() > 0 }
+            .orEmpty()
+        val face = faces.maxByOrNull { it.bounds.width().toLong() * it.bounds.height() }
+        if (face == null) {
+            if (lastSubject != null) {
+                lastSubject = null
+                listener.onSubject(null)
+            }
+            return
+        }
+
+        fun sensorX(value: Int) = (value - array.left).toFloat() / array.width().coerceAtLeast(1)
+        fun sensorY(value: Int) = (value - array.top).toFloat() / array.height().coerceAtLeast(1)
+
+        val corners = listOf(
+            sensorToView(sensorX(face.bounds.left), sensorY(face.bounds.top)),
+            sensorToView(sensorX(face.bounds.right), sensorY(face.bounds.bottom)),
+        )
+        val left = minOf(corners[0].first, corners[1].first)
+        val right = maxOf(corners[0].first, corners[1].first)
+        val top = minOf(corners[0].second, corners[1].second)
+        val bottom = maxOf(corners[0].second, corners[1].second)
+
+        // Both eyes are reported in sensor coordinates; the nearer one is the one that looks
+        // bigger, which is not something the camera says, so the eye closer to the edge of the
+        // frame the face is turned towards is used - in practice, the one further from centre.
+        val eyes = listOfNotNull(face.leftEyePosition, face.rightEyePosition)
+        val focus = if (eyes.isNotEmpty()) {
+            val picked = eyes.maxByOrNull {
+                val point = sensorToView(sensorX(it.x), sensorY(it.y))
+                kotlin.math.abs(point.first - 0.5f)
+            }!!
+            sensorToView(sensorX(picked.x), sensorY(picked.y))
+        } else {
+            ((left + right) / 2f) to (top + (bottom - top) / 3f)
+        }
+
+        val subject = Subject(
+            left = left.coerceIn(0f, 1f),
+            top = top.coerceIn(0f, 1f),
+            right = right.coerceIn(0f, 1f),
+            bottom = bottom.coerceIn(0f, 1f),
+            focusX = focus.first.coerceIn(0f, 1f),
+            focusY = focus.second.coerceIn(0f, 1f),
+            onEye = eyes.isNotEmpty(),
+        )
+        lastSubject = subject
+        listener.onSubject(subject)
+        retargetFocus(subject)
+    }
+
+    /**
+     * Move the focus region onto the subject, but not on every frame: each change rebuilds the
+     * repeating request, and a face that twitches by a pixel is not worth that.
+     */
+    private fun retargetFocus(subject: Subject) {
+        if (maxAfRegions <= 0) return
+        val now = SystemClock.uptimeMillis()
+        val previous = subjectPoint
+        val moved = previous == null ||
+            kotlin.math.abs(previous.first - subject.focusX) > 0.03f ||
+            kotlin.math.abs(previous.second - subject.focusY) > 0.03f
+        if (!moved || now - subjectRegionSentMs < 300L) return
+        subjectPoint = subject.focusX to subject.focusY
+        subjectRegionSentMs = now
+        setMeteringPoint(subject.focusX, subject.focusY, halfSize = 0.03f, apply = false)
+        applyToPreview()
+    }
+
+    /** The focus region for the face being followed, in the array the camera reads regions in. */
+    private fun subjectRegion(): MeteringRectangle? = meteringRegion
 
     private fun publishLiveValues(result: CaptureResult) {
         val now = SystemClock.uptimeMillis()
@@ -999,24 +1123,40 @@ class CameraController(context: Context, private val listener: Listener) {
 
     // region geometry
 
-    private fun setMeteringPoint(normalizedX: Float, normalizedY: Float) {
-        if (maxAfRegions <= 0 && maxAeRegions <= 0) return
-        val chars = characteristics ?: return
-        // Focus and metering rectangles are read in the corrected coordinate space while the
-        // distortion block is running, and in the pre-correction one while it is not. Using the
-        // wrong array aims the tap at the wrong part of the frame, most visibly at the edges.
+    /**
+     * The coordinate space the camera reads focus and metering rectangles in, and reports faces
+     * in: the corrected array while the distortion block is running, the pre-correction one while
+     * it is not. Using the wrong one puts the rectangle slightly off, most visibly at the edges.
+     */
+    private fun regionArray(): Rect? {
+        val chars = characteristics ?: return null
         val corrected = capabilities.supportsUndistort &&
             distortionMode(settings) != CameraMetadata.DISTORTION_CORRECTION_MODE_OFF
-        val array = if (corrected) {
+        return if (corrected) {
             chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
         } else {
             chars.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE)
                 ?: chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-        } ?: return
+        }
+    }
+
+    /**
+     * @param halfSize how much of the frame the rectangle covers either side of the point. A tap
+     *   is a rough gesture and gets a generous box; an eye is a small thing and gets a tight one.
+     * @param apply whether to push the change to the preview, or leave that to the caller.
+     */
+    private fun setMeteringPoint(
+        normalizedX: Float,
+        normalizedY: Float,
+        halfSize: Float = 0.075f,
+        apply: Boolean = true,
+    ) {
+        if (maxAfRegions <= 0 && maxAeRegions <= 0) return
+        val array = regionArray() ?: return
 
         val (sensorX, sensorY) = viewToSensor(normalizedX, normalizedY)
-        val halfWidth = (array.width() * 0.075f).roundToInt().coerceAtLeast(1)
-        val halfHeight = (array.height() * 0.075f).roundToInt().coerceAtLeast(1)
+        val halfWidth = (array.width() * halfSize).roundToInt().coerceAtLeast(1)
+        val halfHeight = (array.height() * halfSize).roundToInt().coerceAtLeast(1)
         val centerX = (array.left + sensorX * array.width()).roundToInt()
         val centerY = (array.top + sensorY * array.height()).roundToInt()
         val rect = Rect(
@@ -1026,8 +1166,7 @@ class CameraController(context: Context, private val listener: Listener) {
             (centerY + halfHeight).coerceIn(array.top + 1, array.bottom),
         )
         meteringRegion = MeteringRectangle(rect, MeteringRectangle.METERING_WEIGHT_MAX - 1)
-        applyToPreview()
-
+        if (apply) applyToPreview()
     }
 
     /** The preview is the sensor image rotated by [sensorOrientation]; undo that rotation. */
@@ -1035,6 +1174,14 @@ class CameraController(context: Context, private val listener: Listener) {
         90 -> y to (1f - x)
         180 -> (1f - x) to (1f - y)
         270 -> (1f - y) to x
+        else -> x to y
+    }
+
+    /** The way back, for drawing something the camera found at a place on the preview. */
+    private fun sensorToView(x: Float, y: Float): Pair<Float, Float> = when (sensorOrientation) {
+        90 -> (1f - y) to x
+        180 -> (1f - x) to (1f - y)
+        270 -> y to (1f - x)
         else -> x to y
     }
 

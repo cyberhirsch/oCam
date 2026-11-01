@@ -82,6 +82,10 @@ data class LensCapabilities(
     val awbModes: Set<Int>,
     /** The DISTORTION_CORRECTION_MODE values this camera accepts. */
     val distortionModes: Set<Int>,
+    /** The STATISTICS_FACE_DETECT_MODE values this camera accepts. */
+    val faceDetectModes: Set<Int>,
+    /** How many faces it will report at once; zero means it does not look. */
+    val maxFaces: Int,
     val supportsRaw: Boolean,
     val supportsHeic: Boolean,
     val hasAutoFocus: Boolean,
@@ -93,6 +97,29 @@ data class LensCapabilities(
     /** Whether this camera can straighten its own lens, rather than only report that it cannot. */
     val supportsUndistort: Boolean
         get() = distortionModes.any { it != CameraMetadata.DISTORTION_CORRECTION_MODE_OFF }
+
+    /**
+     * Whether this camera reports where the eyes are, rather than only where a face is. FULL
+     * detection carries eye and mouth positions; SIMPLE gives a rectangle and nothing inside it.
+     */
+    val reportsEyes: Boolean
+        get() = maxFaces > 0 &&
+            CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL in faceDetectModes
+
+    /** Whether focus can be put on a face at all - with eyes if it has them, the face if not. */
+    val supportsFaceFocus: Boolean
+        get() = hasAutoFocus && maxFaces > 0 && faceDetectModes.any {
+            it != CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
+        }
+
+    /** The best face detection this camera offers. */
+    val bestFaceDetectMode: Int
+        get() = when {
+            reportsEyes -> CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL
+            CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE in faceDetectModes ->
+                CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE
+            else -> CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
+        }
 
     val supportsManualIso: Boolean get() = supportsManualSensor && isoRange != null
     val supportsManualShutter: Boolean get() = supportsManualSensor && exposureTimeRange != null
@@ -109,6 +136,8 @@ data class LensCapabilities(
             supportsManualWhiteBalance = false,
             awbModes = emptySet(),
             distortionModes = emptySet(),
+            faceDetectModes = emptySet(),
+            maxFaces = 0,
             supportsRaw = false,
             supportsHeic = false,
             hasAutoFocus = false,
@@ -136,6 +165,9 @@ fun CameraCharacteristics.capabilities(): LensCapabilities {
             ?.toList()?.toSet().orEmpty(),
         distortionModes = get(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES)
             ?.toList()?.toSet().orEmpty(),
+        faceDetectModes = get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES)
+            ?.toList()?.toSet().orEmpty(),
+        maxFaces = get(CameraCharacteristics.STATISTICS_INFO_MAX_FACE_COUNT) ?: 0,
         supportsRaw = hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW) &&
             rawSize() != null,
         supportsHeic = supportsHeic(),

@@ -54,6 +54,8 @@ data class CaptureSettings(
     val exposureTimeNs: Long = 1_000_000_000L / 60,
     /** Focus distance in diopters (1/m). 0 is infinity. */
     val focusDiopters: Float = 0f,
+    /** While true, focus follows a face's eye instead of staying at [focusDiopters]. */
+    val eyeFocus: Boolean = false,
     val whiteBalance: WhiteBalance = WhiteBalance.DAYLIGHT,
     /** The temperature [WhiteBalance.CUSTOM] is aiming at. */
     val kelvin: Int = 5500,

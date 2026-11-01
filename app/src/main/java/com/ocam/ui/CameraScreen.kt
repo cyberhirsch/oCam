@@ -399,6 +399,7 @@ private fun CameraPreview(
                     }
                 },
             )
+            state.subject?.let { SubjectOverlay(it, modifier = Modifier.fillMaxSize()) }
         }
     }
 }
@@ -470,11 +471,19 @@ private fun FocusColumn(
         Text(text = focusText(state), color = Color(0xCCFFFFFF), fontSize = 10.sp)
         VerticalThinSlider(
             progress = focusProgress(state),
-            enabled = caps.supportsManualFocus,
+            // While an eye is being followed the distance is not the user's to set; the slider
+            // keeps showing where the lens actually is.
+            enabled = caps.supportsManualFocus && !state.settings.eyeFocus,
             onProgress = { progress ->
                 viewModel.setFocusDiopters(progress * caps.minFocusDistance)
             },
             modifier = Modifier.height(150.dp),
+        )
+        FlatButton(
+            label = "EYE",
+            active = state.settings.eyeFocus,
+            enabled = caps.supportsFaceFocus,
+            onClick = viewModel::toggleEyeFocus,
         )
     }
 }
@@ -707,14 +716,22 @@ private fun shutterProgress(state: CameraUiState): Float {
     )
 }
 
-private fun focusText(state: CameraUiState): String =
-    if (!state.capabilities.supportsManualFocus) "fixed"
-    else formatFocus(state.settings.focusDiopters)
+private fun focusText(state: CameraUiState): String = when {
+    state.settings.eyeFocus ->
+        state.liveFocusDiopters?.let(::formatFocus) ?: (if (state.subject != null) "eye" else "…")
+    !state.capabilities.supportsManualFocus -> "fixed"
+    else -> formatFocus(state.settings.focusDiopters)
+}
 
 private fun focusProgress(state: CameraUiState): Float {
     val closest = state.capabilities.minFocusDistance
     if (closest <= 0f) return 0f
-    return (state.settings.focusDiopters / closest).coerceIn(0f, 1f)
+    val diopters = if (state.settings.eyeFocus) {
+        state.liveFocusDiopters ?: state.settings.focusDiopters
+    } else {
+        state.settings.focusDiopters
+    }
+    return (diopters / closest).coerceIn(0f, 1f)
 }
 
 private fun liveReadout(state: CameraUiState): String {

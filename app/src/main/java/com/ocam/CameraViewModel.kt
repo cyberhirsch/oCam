@@ -15,6 +15,7 @@ import com.ocam.camera.CaptureFormat
 import com.ocam.camera.CaptureSettings
 import com.ocam.camera.Lens
 import com.ocam.camera.LensCapabilities
+import com.ocam.camera.Subject
 import com.ocam.camera.WhiteBalance
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,6 +55,8 @@ data class CameraUiState(
     val troubled: Set<String> = emptySet(),
     /** Whether the owner has granted a position; without it only the heading can be written. */
     val locationAllowed: Boolean = false,
+    /** The face focus is following, in preview coordinates, while eye focus is on. */
+    val subject: Subject? = null,
     /** Lenses the owner has taken out of the picker, and the names they gave them. */
     val hiddenLenses: Set<String> = emptySet(),
     val lensNames: Map<String, String> = emptyMap(),
@@ -385,6 +388,41 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         updateSettings { it.copy(focusDiopters = diopters) }
     }
 
+    override fun onSubject(subject: Subject?) {
+        _state.update { if (it.subject === subject) it else it.copy(subject = subject) }
+    }
+
+    /**
+     * Hand focus to the subject's eye, or take it back.
+     *
+     * This is the one thing in the app that keeps moving by itself, which is why it is a switch
+     * rather than a mode the camera can fall into: while it is on the lens follows the face, and
+     * when it goes off the distance it had found is kept, so turning it off holds the focus it
+     * was on rather than jumping back to where the slider was.
+     */
+    fun toggleEyeFocus() {
+        val state = _state.value
+        if (!state.settings.eyeFocus && !state.capabilities.supportsFaceFocus) {
+            showError("This lens cannot look for faces")
+            return
+        }
+        val turningOn = !state.settings.eyeFocus
+        updateSettings { current ->
+            current.copy(
+                eyeFocus = turningOn,
+                focusDiopters = if (turningOn) current.focusDiopters
+                else state.liveFocusDiopters ?: current.focusDiopters,
+            )
+        }
+        if (!turningOn) _state.update { it.copy(subject = null) }
+        if (turningOn) {
+            onStatus(
+                if (state.capabilities.reportsEyes) "Following the eye"
+                else "Following the face - this lens does not report eyes"
+            )
+        }
+    }
+
     fun capture() = controller.capture()
 
     /**
@@ -544,6 +582,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
             else -> presets.firstOrNull() ?: WhiteBalance.DAYLIGHT
         }
         return settings.copy(
+            eyeFocus = settings.eyeFocus && capabilities.supportsFaceFocus,
             iso = capabilities.isoRange?.clamp(settings.iso) ?: settings.iso,
             exposureTimeNs = capabilities.exposureTimeRange?.clamp(settings.exposureTimeNs)
                 ?: settings.exposureTimeNs,
