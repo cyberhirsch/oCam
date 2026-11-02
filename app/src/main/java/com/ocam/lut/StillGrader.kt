@@ -37,7 +37,11 @@ object StillGrader {
         return try {
             source = BitmapFactory.decodeByteArray(
                 bytes, 0, bytes.size,
-                BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 },
+                BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    // Mutable, so the pipeline grades into it rather than into a second copy.
+                    inMutable = true
+                },
             ) ?: return null
             graded = pipeline.grade(source) ?: return null
             ByteArrayOutputStream(bytes.size).use { out ->

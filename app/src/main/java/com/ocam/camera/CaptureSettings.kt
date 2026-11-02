@@ -2,7 +2,6 @@ package com.ocam.camera
 
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraMetadata
-import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.RggbChannelVector
 import kotlin.math.ln
 import kotlin.math.pow
@@ -69,15 +68,6 @@ data class CaptureSettings(
     val format: CaptureFormat = CaptureFormat.JPEG,
     /** Physical device rotation in degrees, from the orientation sensor. */
     val deviceRotation: Int = 0,
-)
-
-/** Identity matrix for COLOR_CORRECTION_TRANSFORM, as numerator/denominator pairs. */
-val IDENTITY_COLOR_TRANSFORM: ColorSpaceTransform = ColorSpaceTransform(
-    intArrayOf(
-        1, 1, 0, 1, 0, 1,
-        0, 1, 1, 1, 0, 1,
-        0, 1, 0, 1, 1, 1,
-    )
 )
 
 /** The colour of a blackbody at [kelvin], as Tanner Helland's approximation of it. */

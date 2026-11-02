@@ -181,7 +181,11 @@ class LutPipeline(initial: CubeLut) {
         GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, maxTexture, 0)
         val tile = minOf(TILE, maxTexture[0].takeIf { it > 0 } ?: TILE)
 
-        val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+        // Graded in place when the caller allows it: each tile is copied out before it is drawn
+        // back, so overwriting the source costs nothing, and a fifty megapixel still then needs
+        // one full size bitmap instead of two - 200 MB rather than 400.
+        val output = if (source.isMutable) source
+        else Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
 
         val texture = IntArray(1)

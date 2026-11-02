@@ -14,6 +14,7 @@ import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.RggbChannelVector
@@ -142,8 +143,13 @@ class CameraController(context: Context, private val listener: Listener) {
     /** True until the meter has been read once; see [Listener.onMeteredExposure]. */
     private var metering = true
     private var meteringFrames = 0
-    /** The last channel gains the camera reported, and the illuminant it reported them for. */
+    /**
+     * The last channel gains and colour matrix the camera reported, and the illuminant it
+     * reported them for. The matrix carries the sensor's colours into the output's; without it
+     * a manual balance renders the sensor's own primaries, muted and off in hue.
+     */
     private var reportedGains: RggbChannelVector? = null
+    private var reportedTransform: ColorSpaceTransform? = null
     private var reportedGainsKelvin = WhiteBalance.DAYLIGHT.kelvin
     private var state = State.PREVIEW
     private var lastPublishMs = 0L
@@ -162,14 +168,29 @@ class CameraController(context: Context, private val listener: Listener) {
      * after it, or given the orientation the phone has by then.
      */
     private class Shot(
+        val id: Int,
         val baseName: String,
         val orientation: Int,
         val heic: Boolean,
+        val raw: Boolean,
         val pose: Pose,
     )
 
     @Volatile private var shot: Shot? = null
     @Volatile private var capturing = false
+    private var shotCount = 0
+
+    /**
+     * Which shot each still frame belongs to, by sensor timestamp. A frame that lands after the
+     * delivery timeout has let go of the shutter may arrive while the next shot is running, and
+     * must still be named after - and counted against - the press that made it.
+     */
+    private val shotsByTimestamp = object : LinkedHashMap<Long, Shot>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Shot>?) = size > 8
+    }
+
+    private fun shotFor(timestamp: Long): Shot? =
+        synchronized(shotsByTimestamp) { shotsByTimestamp[timestamp] } ?: shot
 
     private val pendingSaves = AtomicInteger(0)
     private val rawPending = RawPending()
@@ -301,6 +322,12 @@ class CameraController(context: Context, private val listener: Listener) {
                 ?.contains(CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON) == true
             autoAfMode = pickAutoAfMode(chars)
             meteringRegion = null
+            // Every lens is read once as it opens: the last lens's exposure says nothing about
+            // the light this one sees, and its colour balance is another sensor's.
+            metering = true
+            meteringFrames = 0
+            reportedGains = null
+            reportedTransform = null
             openLens = lens
             previewSize = choosePreviewSize(map.getOutputSizes(SurfaceTexture::class.java), stillSize)
             streamPlans = buildStreamPlans(chars, stillSize, rawSize)
@@ -602,15 +629,16 @@ class CameraController(context: Context, private val listener: Listener) {
         }
 
         val gains = reportedGains
+        val transform = reportedTransform
         if (current.whiteBalance == WhiteBalance.CUSTOM &&
-            caps.supportsManualWhiteBalance && gains != null
+            caps.supportsManualWhiteBalance && gains != null && transform != null
         ) {
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
             builder.set(
                 CaptureRequest.COLOR_CORRECTION_MODE,
                 CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX,
             )
-            builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, IDENTITY_COLOR_TRANSFORM)
+            builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, transform)
             builder.set(
                 CaptureRequest.COLOR_CORRECTION_GAINS,
                 shiftedGains(gains, reportedGainsKelvin, current.kelvin, current.tint),
@@ -752,11 +780,21 @@ class CameraController(context: Context, private val listener: Listener) {
      * rather than a number invented here.
      */
     private fun observe(result: CaptureResult) {
-        val preset = settings.whiteBalance
-        if (preset != WhiteBalance.CUSTOM) {
-            result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { gains ->
-                reportedGains = gains
-                reportedGainsKelvin = preset.kelvin
+        // Read from whichever named light the camera was actually on - which, for a lens just
+        // opened in ADJ, is the stand-in light until this first reading arrives.
+        val awbMode = result.get(CaptureResult.CONTROL_AWB_MODE)
+        val light = WhiteBalance.entries.firstOrNull {
+            it != WhiteBalance.CUSTOM && it.awbMode == awbMode
+        }
+        val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
+        val transform = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
+        if (light != null && gains != null && transform != null) {
+            val first = reportedGains == null
+            reportedGains = gains
+            reportedTransform = transform
+            reportedGainsKelvin = light.kelvin
+            if (first && settings.whiteBalance == WhiteBalance.CUSTOM && !capturing) {
+                applyToPreview()
             }
         }
 
@@ -904,7 +942,14 @@ class CameraController(context: Context, private val listener: Listener) {
         pendingOrientation = outputOrientation()
         // Read once, here: the phone keeps moving while the file is being written.
         val here = if (current.recordPose) pose.current() else Pose.NONE
-        shot = Shot(baseName, pendingOrientation, current.format.usesHeic, here)
+        shot = Shot(
+            id = ++shotCount,
+            baseName = baseName,
+            orientation = pendingOrientation,
+            heic = current.format.usesHeic,
+            raw = willWriteRaw,
+            pose = here,
+        )
         pendingSaves.set((if (willWriteJpeg) 1 else 0) + (if (willWriteRaw) 1 else 0))
         cameraHandler.postDelayed(convergenceTimeout, CONVERGENCE_TIMEOUT_MS)
 
@@ -977,6 +1022,7 @@ class CameraController(context: Context, private val listener: Listener) {
             // The encoder writes the position into the file's own EXIF; nothing else here can
             // reach inside a HEIC to add it afterwards.
             shot?.pose?.location?.let { builder.set(CaptureRequest.JPEG_GPS_LOCATION, it) }
+            builder.setTag(shot)
             active.stopRepeating()
             active.capture(builder.build(), stillCallback, cameraHandler)
             // From here on the wait is on the camera and the encoder. The convergence clock is
@@ -993,12 +1039,23 @@ class CameraController(context: Context, private val listener: Listener) {
     }
 
     private val stillCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureStarted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            timestamp: Long,
+            frameNumber: Long,
+        ) {
+            val owner = request.tag as? Shot ?: return
+            synchronized(shotsByTimestamp) { shotsByTimestamp[timestamp] = owner }
+        }
+
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
-            if (settings.format.writesRaw) rawPending.offerResult(result)
+            val owner = request.tag as? Shot
+            if (owner?.raw == true) rawPending.offerResult(result, owner)
             releaseFocusLock()
             resumePreview()
         }
@@ -1046,23 +1103,30 @@ class CameraController(context: Context, private val listener: Listener) {
         listener.onCaptureBusy(false)
     }
 
-    private fun onFileSaved(name: String) {
+    /**
+     * Only the shot the file belongs to is finished by it. A late file from a shot the delivery
+     * timeout already let go of must not end the one running now, or count against its saves.
+     */
+    private fun onFileSaved(name: String, shotId: Int?) {
         listener.onStatus("Saved $name")
-        if (pendingSaves.decrementAndGet() <= 0) {
-            cameraHandler.post { finishCapture() }
+        cameraHandler.post {
+            if (isCurrentShot(shotId) && pendingSaves.decrementAndGet() <= 0) finishCapture()
         }
     }
 
-    private fun onSaveFailed(what: String, error: Throwable) {
+    private fun onSaveFailed(what: String, error: Throwable, shotId: Int?) {
         Log.e(TAG, "Cannot save $what", error)
         listener.onError("Cannot save $what: ${error.message ?: error.javaClass.simpleName}")
-        cameraHandler.post { finishCapture() }
+        cameraHandler.post { if (isCurrentShot(shotId)) finishCapture() }
     }
+
+    private fun isCurrentShot(shotId: Int?): Boolean =
+        capturing && (shotId == null || shotId == shot?.id)
 
     private val stillAvailable = ImageReader.OnImageAvailableListener { reader ->
         val image = reader.acquireNextImage() ?: return@OnImageAvailableListener
         // The shot this frame belongs to, not whatever the app is set to by the time it lands.
-        val pending = shot
+        val pending = shotFor(image.timestamp)
         val name = pending?.baseName ?: baseName
         val heic = pending?.heic ?: settings.format.usesHeic
         val here = pending?.pose ?: Pose.NONE
@@ -1072,11 +1136,16 @@ class CameraController(context: Context, private val listener: Listener) {
             buffer.get(raw)
             image.close()
             // A simulation that cannot be applied leaves the photograph as the camera made it.
-            val bytes = film?.let { StillGrader.grade(raw, heic, it) } ?: raw
-            onFileSaved(PhotoStore.saveStill(appContext, bytes, name, heic, here))
+            val graded = film?.let { StillGrader.grade(raw, heic, it) }
+            val saved = PhotoStore.saveStill(
+                appContext, graded ?: raw, name, heic, here,
+                // Re-encoding drops the camera's EXIF; the original still has it to copy from.
+                exifSource = if (graded != null) raw else null,
+            )
+            onFileSaved(saved, pending?.id)
         } catch (t: Throwable) {
             runCatching { image.close() }
-            onSaveFailed(if (heic) "HEIC" else "JPEG", t)
+            onSaveFailed(if (heic) "HEIC" else "JPEG", t, pending?.id)
         }
     }
 
@@ -1085,49 +1154,54 @@ class CameraController(context: Context, private val listener: Listener) {
         rawPending.offerImage(image)
     }
 
-    /** Pairs a RAW frame with the capture result that describes it; DngCreator needs both. */
+    /**
+     * Pairs a RAW frame with the capture result that describes it; DngCreator needs both. They
+     * are matched by sensor timestamp, so a late frame cannot be written with the next shot's
+     * metadata.
+     */
     private inner class RawPending {
         private var image: Image? = null
-        private var result: TotalCaptureResult? = null
+        private val results = LinkedHashMap<Long, Pair<TotalCaptureResult, Shot>>()
 
         @Synchronized fun offerImage(newImage: Image) {
+            // The reader holds two frames; an unpaired older one must not starve it.
             image?.let { runCatching { it.close() } }
             image = newImage
             emitIfReady()
         }
 
-        @Synchronized fun offerResult(newResult: TotalCaptureResult) {
-            result = newResult
+        @Synchronized fun offerResult(newResult: TotalCaptureResult, owner: Shot) {
+            val timestamp = newResult.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+            results[timestamp] = newResult to owner
+            while (results.size > 4) results.remove(results.keys.first())
             emitIfReady()
         }
 
         @Synchronized fun clear() {
             image?.let { runCatching { it.close() } }
             image = null
-            result = null
+            results.clear()
         }
 
         private fun emitIfReady() {
             val readyImage = image ?: return
-            val readyResult = result ?: return
+            val (readyResult, pending) = results.remove(readyImage.timestamp) ?: return
             image = null
-            result = null
             val chars = characteristics ?: run {
                 runCatching { readyImage.close() }
                 return
             }
-            val pending = shot
-            val name = pending?.baseName ?: baseName
-            val orientation = pending?.orientation ?: pendingOrientation
-            val here = pending?.pose ?: Pose.NONE
+            val name = pending.baseName
+            val orientation = pending.orientation
+            val here = pending.pose
             ioHandler.post {
                 try {
                     val saved = PhotoStore.saveDng(
                         appContext, chars, readyResult, readyImage, orientation, name, here
                     )
-                    onFileSaved(saved)
+                    onFileSaved(saved, pending.id)
                 } catch (t: Throwable) {
-                    onSaveFailed("DNG", t)
+                    onSaveFailed("DNG", t, pending.id)
                 } finally {
                     runCatching { readyImage.close() }
                 }
