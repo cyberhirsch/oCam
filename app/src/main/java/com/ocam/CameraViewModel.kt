@@ -16,6 +16,7 @@ import com.ocam.camera.CaptureFormat
 import com.ocam.camera.CaptureSettings
 import com.ocam.camera.Lens
 import com.ocam.camera.LensCapabilities
+import com.ocam.camera.ShootingAids
 import com.ocam.camera.Subject
 import com.ocam.lut.LutFile
 import com.ocam.lut.LutPipeline
@@ -74,6 +75,13 @@ data class CameraUiState(
     val saveHeic: Boolean = false,
     val saveRaw: Boolean = true,
     val settingsOpen: Boolean = false,
+    /** What is drawn over the frame, and how the shutter is released. */
+    val aids: ShootingAids = ShootingAids(),
+    /** Seconds left on the self-timer, while it is running. */
+    val countdown: Int? = null,
+    /** While true the frame is shown enlarged around [magnifyCenter], for judging focus. */
+    val magnify: Boolean = false,
+    val magnifyCenter: Pair<Float, Float> = 0.5f to 0.5f,
 ) {
     /** What the shutter can be set to here: what is allowed, filtered by what this lens can do. */
     val formatChoices: List<CaptureFormat>
@@ -108,6 +116,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     private val memory = LensMemory(application)
     private val appSettings = AppSettings(application)
     private var armedLensId: String? = null
+    private var timerJob: Job? = null
+    /** Where the frame was last tapped, which is where the magnifier looks. */
+    private var lastTap: Pair<Float, Float>? = null
 
     private val lutStore = LutStore(application)
     /** Alive only while a simulation is chosen; the camera draws through it when it is. */
@@ -130,6 +141,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 saveRaw = appSettings.saveRaw,
                 hiddenLenses = appSettings.hiddenLenses,
                 lensNames = appSettings.lensNames(),
+                aids = appSettings.aids,
                 locationAllowed = controller.pose.locationAllowed,
                 luts = lutStore.list(),
                 lutName = appSettings.lutName?.takeIf { name ->
@@ -188,6 +200,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     fun onPause() {
         resumed = false
         openedLensId = null
+        cancelTimer()
         controller.pose.stop()
         // The GL context belongs to this screen; holding it in the background would keep the
         // camera's texture alive for nothing. It goes after the lens, not before.
@@ -490,7 +503,58 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
      */
     fun tapPreview(normalizedX: Float, normalizedY: Float) {
         if (_state.value.whiteBalanceAdjust) return
+        lastTap = normalizedX to normalizedY
         controller.rackFocusAt(normalizedX, normalizedY)
+    }
+
+    /**
+     * Enlarge the frame around the last place focus was aimed, or centre if it never was. The
+     * point is fixed while the magnifier is on: a view that moved with every tap could not be
+     * aimed at all.
+     */
+    fun toggleMagnify() {
+        _state.update {
+            it.copy(magnify = !it.magnify, magnifyCenter = lastTap ?: (0.5f to 0.5f))
+        }
+    }
+
+    fun updateAids(transform: (ShootingAids) -> ShootingAids) {
+        val updated = transform(_state.value.aids)
+        appSettings.aids = updated
+        _state.update { it.copy(aids = updated) }
+    }
+
+    /**
+     * What every shutter control does - the button on screen and the volume keys alike. With the
+     * self-timer set it counts down first, and a second press while it counts calls it off.
+     */
+    fun shutter() {
+        val state = _state.value
+        if (state.countdown != null) {
+            cancelTimer()
+            onStatus("Timer cancelled")
+            return
+        }
+        if (state.busy) return
+        val seconds = state.aids.timer.seconds
+        if (seconds <= 0) {
+            capture()
+            return
+        }
+        timerJob = viewModelScope.launch {
+            for (left in seconds downTo 1) {
+                _state.update { it.copy(countdown = left) }
+                delay(1_000)
+            }
+            _state.update { it.copy(countdown = null) }
+            capture()
+        }
+    }
+
+    private fun cancelTimer() {
+        timerJob?.cancel()
+        timerJob = null
+        _state.update { it.copy(countdown = null) }
     }
 
     override fun onFocusRacked(diopters: Float) {

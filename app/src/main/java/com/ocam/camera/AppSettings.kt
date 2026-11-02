@@ -51,6 +51,33 @@ class AppSettings(context: Context) {
             if (value == null) remove(KEY_LUT) else putString(KEY_LUT, value)
         }.apply()
 
+    /** What is drawn over the frame, and how the shutter is released. */
+    var aids: ShootingAids
+        get() = ShootingAids(
+            peaking = prefs.getBoolean(KEY_PEAKING, false),
+            falseColor = prefs.getBoolean(KEY_FALSE_COLOR, false),
+            level = prefs.getBoolean(KEY_LEVEL, false),
+            meter = prefs.getBoolean(KEY_METER, true),
+            grid = enumOr(prefs.getString(KEY_GRID, null), GridMode.OFF),
+            frame = enumOr(prefs.getString(KEY_FRAME, null), CropFrame.NONE),
+            timer = enumOr(prefs.getString(KEY_TIMER, null), SelfTimer.OFF),
+            volumeShutter = prefs.getBoolean(KEY_VOLUME_SHUTTER, true),
+        )
+        set(value) = prefs.edit()
+            .putBoolean(KEY_PEAKING, value.peaking)
+            .putBoolean(KEY_FALSE_COLOR, value.falseColor)
+            .putBoolean(KEY_LEVEL, value.level)
+            .putBoolean(KEY_METER, value.meter)
+            .putString(KEY_GRID, value.grid.name)
+            .putString(KEY_FRAME, value.frame.name)
+            .putString(KEY_TIMER, value.timer.name)
+            .putBoolean(KEY_VOLUME_SHUTTER, value.volumeShutter)
+            .apply()
+
+    /** A stored name from an older build may no longer exist; the default stands in for it. */
+    private inline fun <reified T : Enum<T>> enumOr(name: String?, fallback: T): T =
+        enumValues<T>().firstOrNull { it.name == name } ?: fallback
+
     /** Lens ids the owner has taken out of the picker. */
     var hiddenLenses: Set<String>
         // The returned set must not be handed back to SharedPreferences after being mutated -
@@ -87,6 +114,14 @@ class AppSettings(context: Context) {
         const val KEY_LUT = "lut_name"
         const val KEY_HIDDEN = "hidden_lenses"
         const val KEY_NAME_PREFIX = "lens_name_"
+        const val KEY_PEAKING = "aid_peaking"
+        const val KEY_FALSE_COLOR = "aid_false_color"
+        const val KEY_LEVEL = "aid_level"
+        const val KEY_METER = "aid_meter"
+        const val KEY_GRID = "aid_grid"
+        const val KEY_FRAME = "aid_frame"
+        const val KEY_TIMER = "aid_timer"
+        const val KEY_VOLUME_SHUTTER = "aid_volume_shutter"
     }
 }
 

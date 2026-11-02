@@ -3,6 +3,7 @@ package com.ocam
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.OrientationEventListener
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -90,6 +91,29 @@ class MainActivity : ComponentActivity() {
         orientationListener.disable()
         viewModel.onPause()
         super.onPause()
+    }
+
+    /**
+     * The volume keys as a shutter: a physical button can be pressed without moving the phone,
+     * which a tap on glass cannot. The key-up is swallowed too, or the volume panel still opens.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (!isShutterKey(keyCode)) return super.onKeyDown(keyCode, event)
+        if (event.repeatCount == 0) viewModel.shutter()
+        return true
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean =
+        if (isShutterKey(keyCode)) true else super.onKeyUp(keyCode, event)
+
+    private fun isShutterKey(keyCode: Int): Boolean {
+        if (!hasCameraPermission) return false
+        return when (keyCode) {
+            KeyEvent.KEYCODE_CAMERA -> true
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN ->
+                viewModel.state.value.aids.volumeShutter
+            else -> false
+        }
     }
 }
 

@@ -5,6 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,7 +36,10 @@ import androidx.compose.ui.window.Dialog
 import com.ocam.CameraUiState
 import com.ocam.CameraViewModel
 import com.ocam.appVersion
+import com.ocam.camera.CropFrame
+import com.ocam.camera.GridMode
 import com.ocam.camera.Lens
+import com.ocam.camera.SelfTimer
 
 /**
  * The standing choices: which file types to write, what to do about the lens, and what to make of
@@ -126,6 +130,79 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 enabled = state.settings.undistort,
                 available = state.capabilities.supportsUndistort,
                 onChange = viewModel::setUndistort,
+            )
+
+            Text(
+                text = "Shooting aids",
+                color = Color.White,
+                fontSize = 15.sp,
+                modifier = Modifier.padding(top = 22.dp, bottom = 4.dp),
+            )
+            Text(
+                text = "Drawn over the preview only - nothing here reaches the file or moves a " +
+                    "setting. PEAK and MAG are also beside the focus slider.",
+                color = Color(0x88FFFFFF),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            val aids = state.aids
+            ToggleRow(
+                name = "FOCUS PEAKING",
+                note = "Marks the sharpest edges in red",
+                enabled = aids.peaking,
+                available = true,
+                onChange = { on -> viewModel.updateAids { it.copy(peaking = on) } },
+            )
+            ToggleRow(
+                name = "FALSE COLOUR",
+                note = "Purple crushed, blue deep shadow, green mid grey, pink one stop over, " +
+                    "yellow last highlight, red clipped",
+                enabled = aids.falseColor,
+                available = true,
+                onChange = { on -> viewModel.updateAids { it.copy(falseColor = on) } },
+            )
+            ToggleRow(
+                name = "LEVEL",
+                note = "A horizon that stays level with the world",
+                enabled = aids.level,
+                available = true,
+                onChange = { on -> viewModel.updateAids { it.copy(level = on) } },
+            )
+            ToggleRow(
+                name = "METER",
+                note = "Average brightness against mid grey, in stops, read from the preview - " +
+                    "a film simulation is part of what it reads",
+                enabled = aids.meter,
+                available = true,
+                onChange = { on -> viewModel.updateAids { it.copy(meter = on) } },
+            )
+            ChoiceRow(
+                name = "GRID",
+                options = GridMode.entries,
+                label = { it.label },
+                selected = aids.grid,
+                onSelect = { grid -> viewModel.updateAids { it.copy(grid = grid) } },
+            )
+            ChoiceRow(
+                name = "FRAME",
+                options = CropFrame.entries,
+                label = { it.label },
+                selected = aids.frame,
+                onSelect = { frame -> viewModel.updateAids { it.copy(frame = frame) } },
+            )
+            ChoiceRow(
+                name = "TIMER",
+                options = SelfTimer.entries,
+                label = { it.label },
+                selected = aids.timer,
+                onSelect = { timer -> viewModel.updateAids { it.copy(timer = timer) } },
+            )
+            ToggleRow(
+                name = "VOLUME KEYS",
+                note = "Either volume key releases the shutter, without moving the phone",
+                enabled = aids.volumeShutter,
+                available = true,
+                onChange = { on -> viewModel.updateAids { it.copy(volumeShutter = on) } },
             )
 
             Text(
@@ -297,6 +374,32 @@ private fun ToggleRow(
                 fontSize = 13.sp,
             )
             Text(text = note, color = Color(0x77FFFFFF), fontSize = 10.sp)
+        }
+    }
+}
+
+/** One of a few fixed choices, all on show, the chosen one lit. */
+@Composable
+private fun <T> ChoiceRow(
+    name: String,
+    options: List<T>,
+    label: (T) -> String,
+    selected: T,
+    onSelect: (T) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Text(text = name, color = Color.White, fontSize = 13.sp)
+        Row(
+            modifier = Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            options.forEach { option ->
+                FlatButton(
+                    label = label(option),
+                    active = option == selected,
+                    onClick = { onSelect(option) },
+                )
+            }
         }
     }
 }

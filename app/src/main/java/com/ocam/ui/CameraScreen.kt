@@ -44,7 +44,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -68,6 +71,15 @@ import kotlin.math.roundToInt
 /** How often the preview is read back for the histogram and the clipping warning. */
 private const val SAMPLE_INTERVAL_MS = 200L
 
+/** While peaking or false colour is on: often enough to follow a focus pull. */
+private const val OVERLAY_INTERVAL_MS = 90L
+
+/** The long side of the copy peaking and false colour are drawn from. */
+private const val OVERLAY_SAMPLE_LONG_SIDE = 480
+
+/** How far the magnifier enlarges the frame. */
+private const val MAGNIFICATION = 4f
+
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -75,13 +87,30 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
     var frame by remember { mutableStateOf(FrameStats.EMPTY) }
 
     // Nothing this app draws ever touches the preview pixels, so the only way to know what the
-    // frame contains is to read a small copy of it back a few times a second.
-    LaunchedEffect(state.selectedLensId) {
+    // frame contains is to read a small copy of it back a few times a second. Peaking and false
+    // colour are drawn from that copy, so while either is on it is read larger and more often.
+    val peaking = state.aids.peaking
+    val falseColor = state.aids.falseColor
+    LaunchedEffect(state.selectedLensId, peaking, falseColor) {
+        val overlays = peaking || falseColor
+        if (!overlays) frame = FrameStats(frame.luma, frame.exposureOffset)
         while (true) {
-            delay(SAMPLE_INTERVAL_MS)
-            val view = textureView?.takeIf { it.isAvailable } ?: continue
-            val bitmap = runCatching { view.getBitmap(120, 160) }.getOrNull() ?: continue
-            frame = withContext(Dispatchers.Default) { analyseFrame(bitmap) }
+            delay(if (overlays) OVERLAY_INTERVAL_MS else SAMPLE_INTERVAL_MS)
+            val view = textureView?.takeIf { it.isAvailable && it.width > 0 && it.height > 0 }
+                ?: continue
+            val (sampleWidth, sampleHeight) = if (overlays) {
+                val scale = OVERLAY_SAMPLE_LONG_SIDE.toFloat() / maxOf(view.width, view.height)
+                (view.width * scale).roundToInt().coerceAtLeast(3) to
+                    (view.height * scale).roundToInt().coerceAtLeast(3)
+            } else {
+                120 to 160
+            }
+            val bitmap = runCatching { view.getBitmap(sampleWidth, sampleHeight) }.getOrNull()
+                ?: continue
+            val transform = if (overlays) view.getTransform(null) else null
+            frame = withContext(Dispatchers.Default) {
+                analyseFrame(bitmap, peaking, falseColor, transform)
+            }
             bitmap.recycle()
         }
     }
@@ -249,18 +278,22 @@ private fun LandscapeControls(
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp),
                 )
                 ShutterButton(
-                    busy = state.busy,
+                    busy = state.busy || state.countdown != null,
                     enabled = state.selectedLensId != null,
-                    onClick = viewModel::capture,
+                    onClick = viewModel::shutter,
                     modifier = Modifier.align(Alignment.Center),
                 )
-                Histogram(
-                    stats = frame,
+                Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 20.dp)
                         .fillMaxWidth(),
-                )
+                ) {
+                    if (state.aids.meter) {
+                        MeterScale(frame.exposureOffset, modifier = Modifier.padding(bottom = 3.dp))
+                    }
+                    Histogram(stats = frame, modifier = Modifier.fillMaxWidth())
+                }
             }
         }
     }
@@ -323,7 +356,6 @@ private fun CameraPreview(
     landscape: Boolean,
     onTextureView: (TextureView?) -> Unit,
 ) {
-    val context = LocalContext.current
     BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         // Fit, never fill: the box takes the frame's own proportions, so the whole picture is
         // on screen and the black bars fall outside it.
@@ -339,69 +371,116 @@ private fun CameraPreview(
             width = maxHeight * aspect
         }
 
-        Box(modifier = Modifier.size(width, height)) {
-            AndroidView(
+        val center = state.magnifyCenter
+        Box(modifier = Modifier.size(width, height).clipToBounds()) {
+            // The magnifier scales the preview itself, so what it shows is what the camera sends.
+            // Taps are read in the unscaled frame's coordinates either way, so focus still lands
+            // where the finger is.
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectTapGestures { offset ->
-                            viewModel.tapPreview(
-                                offset.x / size.width.toFloat(),
-                                offset.y / size.height.toFloat(),
-                            )
-                        }
-                    }
-                    .pointerInput(state.whiteBalanceAdjust) {
-                        if (!state.whiteBalanceAdjust) return@pointerInput
-                        detectDragGestures { change, drag ->
-                            change.consume()
-                            viewModel.dragWhiteBalance(
-                                drag.x / size.width.toFloat(),
-                                drag.y / size.height.toFloat(),
-                            )
-                        }
+                    .graphicsLayer {
+                        val scale = if (state.magnify) MAGNIFICATION else 1f
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(center.first, center.second)
                     },
-                update = { view ->
-                    view.post {
-                        applyPreviewTransform(
-                            view = view,
-                            bufferWidth = state.previewWidth,
-                            bufferHeight = state.previewHeight,
-                            rotation = ContextCompat.getDisplayOrDefault(context).rotation,
-                        )
-                    }
-                },
-                factory = { context ->
-                    TextureView(context).apply {
-                        onTextureView(this)
-                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                            override fun onSurfaceTextureAvailable(
-                                texture: SurfaceTexture,
-                                width: Int,
-                                height: Int,
-                            ) = viewModel.onSurfaceAvailable(texture)
+            ) {
+                PreviewTexture(state, viewModel, onTextureView)
+                AnalysisOverlay(frame, modifier = Modifier.fillMaxSize())
+                state.subject?.let { SubjectOverlay(it, modifier = Modifier.fillMaxSize()) }
+            }
 
-                            override fun onSurfaceTextureSizeChanged(
-                                texture: SurfaceTexture,
-                                width: Int,
-                                height: Int,
-                            ) = Unit
-
-                            override fun onSurfaceTextureDestroyed(
-                                texture: SurfaceTexture,
-                            ): Boolean {
-                                viewModel.onSurfaceDestroyed()
-                                return true
-                            }
-
-                            override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
-                        }
-                    }
-                },
-            )
-            state.subject?.let { SubjectOverlay(it, modifier = Modifier.fillMaxSize()) }
+            // Composition aids stay at the frame's own scale: they describe the picture, not
+            // the part of it being looked at.
+            if (!state.magnify) {
+                FramingOverlay(state.aids.grid, state.aids.frame, modifier = Modifier.fillMaxSize())
+            }
+            if (state.aids.level) LevelOverlay(modifier = Modifier.fillMaxSize())
+            if (state.magnify) {
+                Text(
+                    text = "×${MAGNIFICATION.roundToInt()}",
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp)
+                        .background(Color(0x73000000), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+            state.countdown?.let { CountdownOverlay(it, modifier = Modifier.fillMaxSize()) }
         }
     }
+}
+
+/** The view the camera draws into, and the taps and drags that land on it. */
+@Composable
+private fun PreviewTexture(
+    state: CameraUiState,
+    viewModel: CameraViewModel,
+    onTextureView: (TextureView?) -> Unit,
+) {
+    val context = LocalContext.current
+    AndroidView(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    viewModel.tapPreview(
+                        offset.x / size.width.toFloat(),
+                        offset.y / size.height.toFloat(),
+                    )
+                }
+            }
+            .pointerInput(state.whiteBalanceAdjust) {
+                if (!state.whiteBalanceAdjust) return@pointerInput
+                detectDragGestures { change, drag ->
+                    change.consume()
+                    viewModel.dragWhiteBalance(
+                        drag.x / size.width.toFloat(),
+                        drag.y / size.height.toFloat(),
+                    )
+                }
+            },
+        update = { view ->
+            view.post {
+                applyPreviewTransform(
+                    view = view,
+                    bufferWidth = state.previewWidth,
+                    bufferHeight = state.previewHeight,
+                    rotation = ContextCompat.getDisplayOrDefault(context).rotation,
+                )
+            }
+        },
+        factory = { context ->
+            TextureView(context).apply {
+                onTextureView(this)
+                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                    override fun onSurfaceTextureAvailable(
+                        texture: SurfaceTexture,
+                        width: Int,
+                        height: Int,
+                    ) = viewModel.onSurfaceAvailable(texture)
+
+                    override fun onSurfaceTextureSizeChanged(
+                        texture: SurfaceTexture,
+                        width: Int,
+                        height: Int,
+                    ) = Unit
+
+                    override fun onSurfaceTextureDestroyed(
+                        texture: SurfaceTexture,
+                    ): Boolean {
+                        viewModel.onSurfaceDestroyed()
+                        return true
+                    }
+
+                    override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+                }
+            }
+        },
+    )
 }
 
 @Composable
@@ -485,6 +564,17 @@ private fun FocusColumn(
             active = state.settings.eyeFocus,
             enabled = caps.supportsFaceFocus,
             onClick = viewModel::toggleEyeFocus,
+        )
+        // The two ways of seeing where focus is: marks on what is sharp, and a closer look.
+        FlatButton(
+            label = "PEAK",
+            active = state.aids.peaking,
+            onClick = { viewModel.updateAids { it.copy(peaking = !it.peaking) } },
+        )
+        FlatButton(
+            label = "MAG",
+            active = state.magnify,
+            onClick = viewModel::toggleMagnify,
         )
     }
 }
@@ -621,12 +711,17 @@ private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel, frame: 
             FlatButton(label = "FILES", active = false, onClick = { openPhotoFolder(context) })
         }
         ShutterButton(
-            busy = state.busy,
+            busy = state.busy || state.countdown != null,
             enabled = state.selectedLensId != null,
-            onClick = viewModel::capture,
+            onClick = viewModel::shutter,
         )
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            Histogram(stats = frame, modifier = Modifier.width(96.dp))
+            Column(modifier = Modifier.width(96.dp)) {
+                if (state.aids.meter) {
+                    MeterScale(frame.exposureOffset, modifier = Modifier.padding(bottom = 3.dp))
+                }
+                Histogram(stats = frame, modifier = Modifier.fillMaxWidth())
+            }
         }
     }
 }
