@@ -7,12 +7,15 @@ import android.hardware.camera2.DngCreator
 import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
 import androidx.exifinterface.media.ExifInterface
 import com.ocam.camera.Pose
 import java.io.ByteArrayInputStream
+import java.io.FileDescriptor
 import java.io.IOException
 import java.io.OutputStream
 import java.text.SimpleDateFormat
@@ -141,6 +144,88 @@ object PhotoStore {
     /** EXIF rationals are a fraction; one decimal place is finer than any phone compass. */
     private fun degreesAsRational(degrees: Float): String =
         "${(degrees * 10f).toInt().coerceIn(0, 3600)}/10"
+
+    /**
+     * A picture this app built out of many frames. Nothing wrote any EXIF for it, so all of it is
+     * said here: the way up, the moment, the camera, and what the frames were.
+     */
+    fun saveMerged(
+        context: Context,
+        bytes: ByteArray,
+        baseName: String,
+        orientationDegrees: Int,
+        pose: Pose,
+        iso: Int,
+        frameExposureNs: Long,
+        description: String,
+    ): String {
+        val name = "$baseName.jpg"
+        val uri = write(context, name, "image/jpeg") { it.write(bytes) }
+        runCatching {
+            context.contentResolver.openFileDescriptor(uri, "rw")?.use { descriptor ->
+                val exif = ExifInterface(descriptor.fileDescriptor)
+                val now = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(Date())
+                exif.setAttribute(
+                    ExifInterface.TAG_ORIENTATION,
+                    exifOrientation(orientationDegrees).toString(),
+                )
+                exif.setAttribute(ExifInterface.TAG_DATETIME, now)
+                exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, now)
+                exif.setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER)
+                exif.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)
+                exif.setAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, iso.toString())
+                exif.setAttribute(
+                    ExifInterface.TAG_EXPOSURE_TIME,
+                    (frameExposureNs / 1_000_000_000.0).toString(),
+                )
+                exif.setAttribute(ExifInterface.TAG_IMAGE_DESCRIPTION, description)
+                pose.location?.let { exif.setGpsInfo(it) }
+                pose.yawDegrees?.let { writeHeading(exif, it, pose) }
+                exif.saveAttributes()
+            }
+        }.onFailure { Log.w(TAG, "Cannot write EXIF into $name", it) }
+        return name
+    }
+
+    /** A video being written; it is not in the gallery until [commit]. */
+    class VideoFile internal constructor(
+        private val context: Context,
+        private val uri: Uri,
+        private val handle: ParcelFileDescriptor,
+        val name: String,
+    ) {
+        val descriptor: FileDescriptor get() = handle.fileDescriptor
+
+        fun commit() {
+            runCatching { handle.close() }
+            val values = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+            context.contentResolver.update(uri, values, null, null)
+        }
+
+        fun discard() {
+            runCatching { handle.close() }
+            runCatching { context.contentResolver.delete(uri, null, null) }
+        }
+    }
+
+    /** Beside the photographs: a build-up video belongs with the picture it builds. */
+    fun newVideo(context: Context, name: String): VideoFile {
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, name)
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/$ALBUM")
+            put(MediaStore.Video.Media.IS_PENDING, 1)
+        }
+        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val uri = resolver.insert(collection, values)
+            ?: throw IOException("MediaStore refused to create $name")
+        val handle = resolver.openFileDescriptor(uri, "rw") ?: run {
+            resolver.delete(uri, null, null)
+            throw IOException("Cannot open $name for writing")
+        }
+        return VideoFile(context, uri, handle, name)
+    }
 
     /**
      * Writes a DNG built from the raw frame and the exact capture result that produced it - the

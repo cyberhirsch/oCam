@@ -9,8 +9,10 @@ import android.hardware.SensorManager
 import android.view.Surface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ocam.camera.CropFrame
 import com.ocam.camera.GridMode
+import com.ocam.sequence.SequenceProgress
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -242,4 +245,73 @@ fun CountdownOverlay(seconds: Int, modifier: Modifier = Modifier) {
                 .padding(horizontal = 26.dp),
         )
     }
+}
+
+/**
+ * The picture being built, over the live frame, and how far along it is. While held the live frame
+ * shows through it, so whoever is walking through can see where they are against the light so far.
+ */
+@Composable
+fun SequenceOverlay(progress: SequenceProgress, onHold: () -> Unit, modifier: Modifier = Modifier) {
+    val view = LocalView.current
+    val paint = remember { Paint(Paint.FILTER_BITMAP_FLAG) }
+    Box(modifier = modifier) {
+        progress.picture?.let { image ->
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val degrees = when (view.display?.rotation ?: Surface.ROTATION_0) {
+                    Surface.ROTATION_90 -> 90
+                    Surface.ROTATION_180 -> 180
+                    Surface.ROTATION_270 -> 270
+                    else -> 0
+                }
+                // The frames are the sensor's own, so they are turned the way the camera's
+                // preview is: the platform's rule for it, mirror first where the lens faces you.
+                val turn = if (progress.mirrored) {
+                    (360 - (progress.sensorOrientation + degrees) % 360) % 360
+                } else {
+                    (progress.sensorOrientation - degrees + 360) % 360
+                }
+                val across = if (turn % 180 == 0) image.width else image.height
+                val down = if (turn % 180 == 0) image.height else image.width
+                val matrix = Matrix().apply {
+                    postTranslate(-image.width / 2f, -image.height / 2f)
+                    if (progress.mirrored) postScale(-1f, 1f)
+                    postRotate(turn.toFloat())
+                    postScale(size.width / across, size.height / down)
+                    postTranslate(size.width / 2f, size.height / 2f)
+                }
+                paint.alpha = if (progress.paused) 140 else 255
+                drawContext.canvas.nativeCanvas.drawBitmap(image, matrix, paint)
+            }
+        }
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 8.dp)
+                .background(Color(0x99000000), RoundedCornerShape(4.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = sequenceText(progress),
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            FlatButton(
+                label = if (progress.paused) "GO ON" else "HOLD",
+                active = progress.paused,
+                onClick = onHold,
+            )
+        }
+    }
+}
+
+private fun sequenceText(progress: SequenceProgress): String {
+    val seconds = progress.exposedNs / 1_000_000_000.0
+    val time = progress.targetNs?.let {
+        String.format(Locale.US, "%.1f / %d s", seconds, it / 1_000_000_000L)
+    } ?: String.format(Locale.US, "%.1f s", seconds)
+    return "${progress.mode.label} · ${progress.frames} · $time"
 }

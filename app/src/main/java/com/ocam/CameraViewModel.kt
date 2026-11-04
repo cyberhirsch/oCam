@@ -21,6 +21,9 @@ import com.ocam.camera.Subject
 import com.ocam.lut.LutFile
 import com.ocam.lut.LutPipeline
 import com.ocam.lut.LutStore
+import com.ocam.sequence.SequenceMode
+import com.ocam.sequence.SequenceOptions
+import com.ocam.sequence.SequenceProgress
 import com.ocam.camera.WhiteBalance
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -82,6 +85,11 @@ data class CameraUiState(
     /** While true the frame is shown enlarged around [magnifyCenter], for judging focus. */
     val magnify: Boolean = false,
     val magnifyCenter: Pair<Float, Float> = 0.5f to 0.5f,
+    /** What the shutter does: one photograph, or a run of frames made into one picture. */
+    val sequenceMode: SequenceMode = SequenceMode.OFF,
+    val sequenceOptions: SequenceOptions = SequenceOptions(),
+    /** The run in progress, while there is one. */
+    val sequence: SequenceProgress? = null,
 ) {
     /** What the shutter can be set to here: what is allowed, filtered by what this lens can do. */
     val formatChoices: List<CaptureFormat>
@@ -142,6 +150,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 hiddenLenses = appSettings.hiddenLenses,
                 lensNames = appSettings.lensNames(),
                 aids = appSettings.aids,
+                sequenceOptions = appSettings.sequenceOptions,
                 locationAllowed = controller.pose.locationAllowed,
                 luts = lutStore.list(),
                 lutName = appSettings.lutName?.takeIf { name ->
@@ -530,6 +539,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
      */
     fun shutter() {
         val state = _state.value
+        if (state.sequence != null) {
+            controller.stopSequence()
+            return
+        }
         if (state.countdown != null) {
             cancelTimer()
             onStatus("Timer cancelled")
@@ -538,7 +551,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         if (state.busy) return
         val seconds = state.aids.timer.seconds
         if (seconds <= 0) {
-            capture()
+            release()
             return
         }
         timerJob = viewModelScope.launch {
@@ -547,8 +560,47 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 delay(1_000)
             }
             _state.update { it.copy(countdown = null) }
-            capture()
+            release()
         }
+    }
+
+    private fun release() {
+        val state = _state.value
+        if (state.sequenceMode == SequenceMode.OFF) {
+            capture()
+            return
+        }
+        // Focus has to stay where it is while frames add up, so it stops following first. The
+        // switch keeps the distance it had found.
+        if (state.settings.eyeFocus) toggleEyeFocus()
+        controller.startSequence(state.sequenceOptions)
+    }
+
+    /** Step to the next thing the shutter can do. */
+    fun cycleSequenceMode() {
+        val state = _state.value
+        if (state.busy || state.sequence != null || state.countdown != null) return
+        val modes = SequenceMode.entries
+        val next = modes[(modes.indexOf(state.sequenceMode) + 1) % modes.size]
+        _state.update { it.copy(sequenceMode = next) }
+        controller.setSequenceMode(next)
+        onStatus(next.hint)
+    }
+
+    /** Hold the run while someone walks through the frame, or carry on. */
+    fun toggleSequenceHold() {
+        val run = _state.value.sequence ?: return
+        controller.pauseSequence(!run.paused)
+    }
+
+    fun updateSequenceOptions(transform: (SequenceOptions) -> SequenceOptions) {
+        val updated = transform(_state.value.sequenceOptions)
+        appSettings.sequenceOptions = updated
+        _state.update { it.copy(sequenceOptions = updated) }
+    }
+
+    override fun onSequence(progress: SequenceProgress?) {
+        _state.update { it.copy(sequence = progress) }
     }
 
     private fun cancelTimer() {

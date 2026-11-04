@@ -40,6 +40,7 @@ import com.ocam.camera.CropFrame
 import com.ocam.camera.GridMode
 import com.ocam.camera.Lens
 import com.ocam.camera.SelfTimer
+import com.ocam.sequence.LONG_EXPOSURE_SECONDS
 
 /**
  * The standing choices: which file types to write, what to do about the lens, and what to make of
@@ -130,6 +131,39 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 enabled = state.settings.undistort,
                 available = state.capabilities.supportsUndistort,
                 onChange = viewModel::setUndistort,
+            )
+
+            Text(
+                text = "Many frames, one picture",
+                color = Color.White,
+                fontSize = 15.sp,
+                modifier = Modifier.padding(top = 22.dp, bottom = 4.dp),
+            )
+            Text(
+                text = "The button beside the file format moves the shutter between ONE, PAINT, " +
+                    "LONG and TRAIL. These write a JPEG of up to 13 megapixels, made from the " +
+                    "camera's own frames at the ISO and shutter set.",
+                color = Color(0x88FFFFFF),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            val sequence = state.sequenceOptions
+            ChoiceRow(
+                name = "LONG EXPOSURE",
+                options = LONG_EXPOSURE_SECONDS,
+                label = { "${it}s" },
+                selected = sequence.longSeconds,
+                onSelect = { seconds ->
+                    viewModel.updateSequenceOptions { it.copy(longSeconds = seconds) }
+                },
+            )
+            ToggleRow(
+                name = "BUILD-UP VIDEO",
+                note = "PAINT and TRAIL also write an MP4 of the picture appearing, without the " +
+                    "film simulation",
+                enabled = sequence.buildUpVideo,
+                available = true,
+                onChange = { on -> viewModel.updateSequenceOptions { it.copy(buildUpVideo = on) } },
             )
 
             Text(

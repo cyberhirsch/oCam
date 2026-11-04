@@ -30,6 +30,11 @@ import android.view.Surface
 import com.ocam.io.PhotoStore
 import com.ocam.lut.LutPipeline
 import com.ocam.lut.StillGrader
+import com.ocam.sequence.SequenceMode
+import com.ocam.sequence.SequenceOptions
+import com.ocam.sequence.SequencePlan
+import com.ocam.sequence.SequenceProgress
+import com.ocam.sequence.SequenceRun
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -58,6 +63,15 @@ private const val RACK_TIMEOUT_MS = 2_500L
 private const val METERING_FRAME_LIMIT = 60
 
 /**
+ * The most a frame to be merged may hold. Sums of it live on the Java heap, and it has to be read
+ * and merged in the time of one frame, so a fifty megapixel sensor is asked for less than it has.
+ */
+private const val MAX_MERGE_PIXELS = 13_000_000L
+
+/** A merged stream slower than this would leave gaps in moving light. */
+private const val MERGE_FRAME_DURATION_NS = 100_000_000L
+
+/**
  * Owns the Camera2 device, session and capture pipeline. Every camera call happens on a single
  * background thread; image encoding happens on a second one. Nothing here knows about Compose.
  */
@@ -82,6 +96,8 @@ class CameraController(context: Context, private val listener: Listener) {
         /** The face focus is following, or null when there is none to follow. */
         fun onSubject(subject: Subject?)
         fun onCaptureBusy(busy: Boolean)
+        /** How a run of frames is getting on, or null when none is running. */
+        fun onSequence(progress: SequenceProgress?)
         fun onStatus(message: String)
         fun onError(message: String)
     }
@@ -89,7 +105,7 @@ class CameraController(context: Context, private val listener: Listener) {
     private enum class State { PREVIEW, WAIT_FOCUS, WAIT_PRECAPTURE, WAIT_EXPOSURE, CAPTURING }
 
     /** One attempt at a set of output streams: null means "do not ask for this one". */
-    private data class StreamPlan(val still: Size?, val raw: Size?)
+    private data class StreamPlan(val still: Size?, val raw: Size?, val merge: Size? = null)
 
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(CameraManager::class.java)
@@ -110,6 +126,8 @@ class CameraController(context: Context, private val listener: Listener) {
     private val cameraExecutor = Executor { command -> cameraHandler.post(command) }
     private val ioThread = HandlerThread("camera-io").apply { start() }
     private val ioHandler = Handler(ioThread.looper)
+    private val mergeThread = HandlerThread("camera-merge").apply { start() }
+    private val mergeHandler = Handler(mergeThread.looper)
 
     /** Every lens the device exposes, main lenses first. */
     val lenses: List<Lens> by lazy { enumerateLenses(manager) }
@@ -121,6 +139,7 @@ class CameraController(context: Context, private val listener: Listener) {
     private var stillReader: ImageReader? = null
     private var configuredStillFormat: Int? = null
     private var rawReader: ImageReader? = null
+    private var mergeReader: ImageReader? = null
     private var openLens: Lens? = null
     private var streamPlans: List<StreamPlan> = emptyList()
     private var planIndex = 0
@@ -133,6 +152,8 @@ class CameraController(context: Context, private val listener: Listener) {
     private var maxAeRegions = 0
     private var shadingMapAvailable = false
     private var rackingFocus = false
+    /** Whether this lens has had its one look at what is in front of it. */
+    private var lookedOnce = false
     /** Where the eye was when the focus region was last sent, and when that was. */
     private var subjectPoint: Pair<Float, Float>? = null
     private var subjectRegionSentMs = 0L
@@ -179,6 +200,15 @@ class CameraController(context: Context, private val listener: Listener) {
     @Volatile private var shot: Shot? = null
     @Volatile private var capturing = false
     private var shotCount = 0
+
+    /** What the shutter does, and so which streams the session has to be built with. */
+    private var sequenceMode = SequenceMode.OFF
+    /** The run the shutter started, while it is running. Camera thread only. */
+    private var sequence: SequenceRun? = null
+    /** The same run as the merge thread sees it, which stops taking frames a little later. */
+    @Volatile private var mergingRun: SequenceRun? = null
+    /** The run being written out, which is what the shutter is still waiting for. */
+    private var savingRun: SequenceRun? = null
 
     /**
      * Which shot each still frame belongs to, by sensor timestamp. A frame that lands after the
@@ -227,7 +257,7 @@ class CameraController(context: Context, private val listener: Listener) {
             // building the session again rather than just changing a request key.
             val wanted = newSettings.format.stillFormat
             if (!capturing && wanted != null && configuredStillFormat != null &&
-                wanted != configuredStillFormat
+                wanted != configuredStillFormat && sequenceMode == SequenceMode.OFF
             ) {
                 reconfigureForFormat()
                 return@post
@@ -241,10 +271,41 @@ class CameraController(context: Context, private val listener: Listener) {
     }
 
     /**
+     * Choose what the shutter does. A frame to be merged comes out of a stream of its own, and a
+     * session cannot grow one, so moving between a photograph and a run rebuilds the session.
+     */
+    fun setSequenceMode(mode: SequenceMode) {
+        cameraHandler.post {
+            val rebuild = (mode == SequenceMode.OFF) != (sequenceMode == SequenceMode.OFF)
+            sequenceMode = mode
+            if (rebuild && device != null) reconfigureForFormat()
+        }
+    }
+
+    fun startSequence(options: SequenceOptions) {
+        cameraHandler.post { startRun(options) }
+    }
+
+    /** End the run and write what it has gathered. */
+    fun stopSequence() {
+        cameraHandler.post { endRun() }
+    }
+
+    /** Stop gathering light without ending the run, to walk through the frame unseen. */
+    fun pauseSequence(paused: Boolean) {
+        cameraHandler.post {
+            val run = sequence ?: return@post
+            run.paused = paused
+            mergeHandler.post { run.publish() }
+        }
+    }
+
+    /**
      * Pull focus to a spot: borrow autofocus for one shot, then keep the distance it found.
      */
     fun rackFocusAt(normalizedX: Float, normalizedY: Float) {
         cameraHandler.post {
+            if (sequence != null) return@post
             if (!capabilities.hasAutoFocus) {
                 listener.onStatus("This lens cannot search for focus")
                 return@post
@@ -284,6 +345,8 @@ class CameraController(context: Context, private val listener: Listener) {
     fun release() {
         cameraHandler.post {
             closeInternal()
+            // Queued behind the run that closing just ended, so it is written out first.
+            mergeHandler.post { mergeThread.quitSafely() }
             cameraThread.quitSafely()
         }
         ioHandler.post { ioThread.quitSafely() }
@@ -326,6 +389,7 @@ class CameraController(context: Context, private val listener: Listener) {
             // the light this one sees, and its colour balance is another sensor's.
             metering = true
             meteringFrames = 0
+            lookedOnce = false
             reportedGains = null
             reportedTransform = null
             openLens = lens
@@ -363,6 +427,9 @@ class CameraController(context: Context, private val listener: Listener) {
     }
 
     private fun closeInternal() {
+        // A run cut short by the app going away is still a picture: it is written, not dropped.
+        endRun()
+        savingRun = null
         cameraHandler.removeCallbacks(convergenceTimeout)
         cameraHandler.removeCallbacks(deliveryTimeout)
         runCatching { session?.close() }
@@ -391,6 +458,8 @@ class CameraController(context: Context, private val listener: Listener) {
         stillReader = null
         runCatching { rawReader?.close() }
         rawReader = null
+        runCatching { mergeReader?.close() }
+        mergeReader = null
     }
 
     private val deviceCallback = object : CameraDevice.StateCallback() {
@@ -422,6 +491,10 @@ class CameraController(context: Context, private val listener: Listener) {
         stillMax: Size?,
         rawMax: Size?,
     ): List<StreamPlan> {
+        if (sequenceMode != SequenceMode.OFF) {
+            return mergeSizes(characteristics, stillMax).map { StreamPlan(null, null, it) } +
+                StreamPlan(null, null)
+        }
         val raw = rawMax?.takeIf {
             characteristics.hasCapability(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW)
         }
@@ -439,6 +512,34 @@ class CameraController(context: Context, private val listener: Listener) {
             // Last resort: a preview and nothing else, so the lens at least shows a picture.
             add(StreamPlan(null, null))
         }
+    }
+
+    /**
+     * What to ask for frames to merge at, largest first: the biggest size that keeps up, then the
+     * sizes a camera is more and more likely to accept beside a preview. All in the proportions of
+     * the preview, so the picture being built lands on the frame it was composed in.
+     */
+    private fun mergeSizes(characteristics: CameraCharacteristics, target: Size?): List<Size> {
+        val map = characteristics.streamMap() ?: return emptyList()
+        val all = map.getOutputSizes(ImageFormat.YUV_420_888)
+            ?.filter { it.width % 2 == 0 && it.height % 2 == 0 }
+            .orEmpty()
+        val ratio = target?.let { it.width.toFloat() / it.height }
+        val pool = all
+            .filter { ratio != null && abs(it.width.toFloat() / it.height - ratio) < 0.02f }
+            .ifEmpty { all }
+        fun largest(sizes: List<Size>) = sizes.maxByOrNull { it.width.toLong() * it.height }
+        return listOfNotNull(
+            largest(
+                pool.filter {
+                    it.width.toLong() * it.height <= MAX_MERGE_PIXELS &&
+                        map.getOutputMinFrameDuration(ImageFormat.YUV_420_888, it) <=
+                        MERGE_FRAME_DURATION_NS
+                }
+            ),
+            largest(pool.filter { it.width <= 3840 && it.height <= 2160 }),
+            largest(pool.filter { it.width <= 1920 && it.height <= 1080 }),
+        ).distinct()
     }
 
     private fun configureCurrentPlan() {
@@ -461,11 +562,16 @@ class CameraController(context: Context, private val listener: Listener) {
             rawReader = ImageReader.newInstance(size.width, size.height, ImageFormat.RAW_SENSOR, 2)
                 .apply { setOnImageAvailableListener(rawAvailable, ioHandler) }
         }
+        plan.merge?.let { size ->
+            mergeReader = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 3)
+                .apply { setOnImageAvailableListener(mergeAvailable, mergeHandler) }
+        }
 
         try {
             val outputs = mutableListOf(OutputConfiguration(preview))
             stillReader?.let { outputs += OutputConfiguration(it.surface) }
             rawReader?.let { outputs += OutputConfiguration(it.surface) }
+            mergeReader?.let { outputs += OutputConfiguration(it.surface) }
             camera.createCaptureSession(
                 SessionConfiguration(
                     SessionConfiguration.SESSION_REGULAR,
@@ -511,7 +617,9 @@ class CameraController(context: Context, private val listener: Listener) {
             openLens?.let { lens ->
                 listener.onLensOpened(
                     lens,
-                    capabilities.copy(supportsRaw = rawReader != null),
+                    // A session built to merge frames has no RAW stream, but the lens still does.
+                    if (sequenceMode != SequenceMode.OFF) capabilities
+                    else capabilities.copy(supportsRaw = rawReader != null),
                     previewSize,
                     describeStreams(),
                 )
@@ -533,7 +641,10 @@ class CameraController(context: Context, private val listener: Listener) {
             append(", ${if (settings.format.usesHeic) "heic" else "jpeg"} ${it.width}x${it.height}")
         }
         rawReader?.let { append(", raw ${it.width}x${it.height}") }
-        if (stillReader == null && rawReader == null) append(", no capture stream")
+        mergeReader?.let { append(", merge ${it.width}x${it.height}") }
+        if (stillReader == null && rawReader == null && mergeReader == null) {
+            append(", no capture stream")
+        }
         append(" (plan ${planIndex + 1} of ${streamPlans.size})")
     }
 
@@ -551,15 +662,19 @@ class CameraController(context: Context, private val listener: Listener) {
 
             // One look as the lens opens, so it holds the distance to what is in front of it
             // rather than to infinity. Nothing after this moves focus on its own.
-            if (capabilities.supportsManualFocus && capabilities.hasAutoFocus) {
+            // Only as the lens opens: rebuilding the session must not move a focus that was set.
+            if (!lookedOnce && capabilities.supportsManualFocus && capabilities.hasAutoFocus) {
                 startRack(byTap = false)
             }
+            lookedOnce = true
         } catch (e: Exception) {
             listener.onError("Preview failed: ${e.javaClass.simpleName}")
         }
     }
 
     private fun applyToPreview() {
+        // The running request carries the frames being merged; a preview request would stop them.
+        if (sequence != null) return
         val builder = previewBuilder ?: return
         val active = session ?: return
         applySettings(builder)
@@ -959,6 +1074,148 @@ class CameraController(context: Context, private val listener: Listener) {
             !capabilities.supportsManualFocus && capabilities.hasAutoFocus -> lockFocus(active)
             !capabilities.supportsManualSensor || metering -> runPrecapture()
             else -> captureStill()
+        }
+    }
+
+    /**
+     * Start taking frames. The camera runs on the settings it already has, with nothing left to
+     * decide: exposure, focus and white balance are what make frames add up to one picture, so a
+     * lens that cannot hold them still cannot do this at all.
+     */
+    private fun startRun(options: SequenceOptions) {
+        if (capturing || sequenceMode == SequenceMode.OFF) return
+        val camera = device
+        val active = session
+        val preview = previewSurface
+        val reader = mergeReader
+        if (camera == null || active == null || preview == null || reader == null) {
+            listener.onError("This lens gave no stream to merge")
+            return
+        }
+        if (!capabilities.supportsManualSensor) {
+            listener.onError("This lens cannot hold its exposure still")
+            return
+        }
+        if (metering) {
+            listener.onStatus("Still reading the light")
+            return
+        }
+        if (rackingFocus) {
+            rackingFocus = false
+            cameraHandler.removeCallbacks(rackTimeout)
+        }
+
+        val current = settings
+        val mode = sequenceMode
+        val plan = SequencePlan(
+            mode = mode,
+            baseName = PhotoStore.newBaseName(System.currentTimeMillis()),
+            orientation = outputOrientation(),
+            pose = if (current.recordPose) pose.current() else Pose.NONE,
+            iso = capabilities.isoRange?.clamp(current.iso) ?: current.iso,
+            exposureNs = capabilities.exposureTimeRange?.clamp(current.exposureTimeNs)
+                ?: current.exposureTimeNs,
+            targetNs = if (mode == SequenceMode.LONG) options.longSeconds * 1_000_000_000L else null,
+            video = options.buildUpVideo,
+            sensorOrientation = sensorOrientation,
+            mirrored = facing == CameraCharacteristics.LENS_FACING_FRONT,
+        )
+        val run = try {
+            SequenceRun(
+                context = appContext,
+                width = reader.width,
+                height = reader.height,
+                plan = plan,
+                film = { film },
+                onProgress = listener::onSequence,
+                onSaved = { listener.onStatus("Saved $it") },
+                onProblem = listener::onError,
+            )
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "No room for a run at ${reader.width}x${reader.height}", e)
+            listener.onError("Not enough memory to merge frames this size")
+            return
+        }
+
+        try {
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            builder.addTarget(preview)
+            builder.addTarget(reader.surface)
+            applySettings(builder)
+            // On a tripod a stabiliser has nothing to correct, and its drift would blur the sum.
+            builder.set(
+                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF,
+            )
+            sequence = run
+            mergingRun = run
+            capturing = true
+            active.setRepeatingRequest(builder.build(), runCallback, cameraHandler)
+            mergeHandler.post { run.publish() }
+        } catch (e: Exception) {
+            Log.e(TAG, "Cannot start the run", e)
+            sequence = null
+            mergingRun = null
+            capturing = false
+            listener.onError("Cannot start: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Back to the preview, and write out what was gathered. Frames already on their way are still
+     * merged: the camera thread only stops asking, and the merge thread finishes after them.
+     */
+    private fun endRun() {
+        val run = sequence ?: return
+        sequence = null
+        savingRun = run
+        listener.onCaptureBusy(true)
+        resumePreview()
+        mergeHandler.post {
+            mergingRun = null
+            listener.onSequence(null)
+            try {
+                run.finish()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Cannot finish the run", t)
+                listener.onError("Cannot save the picture: ${t.javaClass.simpleName}")
+            }
+            cameraHandler.post {
+                if (savingRun === run) {
+                    savingRun = null
+                    finishCapture()
+                } else {
+                    // The lens shut while this was being written, and the state went with it.
+                    listener.onCaptureBusy(capturing)
+                }
+            }
+        }
+    }
+
+    private val runCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) = publishLiveValues(result)
+    }
+
+    private val mergeAvailable = ImageReader.OnImageAvailableListener { reader ->
+        val image = runCatching { reader.acquireNextImage() }.getOrNull()
+            ?: return@OnImageAvailableListener
+        try {
+            val run = mergingRun
+            if (run != null && run.offer(image)) {
+                cameraHandler.post { if (sequence === run) endRun() }
+            }
+        } catch (t: Throwable) {
+            // A lens shutting under a frame lands here too; either way what has been gathered is
+            // still good, so a run out of memory ends and writes it.
+            Log.e(TAG, "Dropped a frame from the run", t)
+            val run = mergingRun
+            if (t is OutOfMemoryError) cameraHandler.post { if (sequence === run) endRun() }
+        } finally {
+            runCatching { image.close() }
         }
     }
 

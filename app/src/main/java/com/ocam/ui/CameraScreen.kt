@@ -60,6 +60,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocam.CameraUiState
 import com.ocam.CameraViewModel
 import com.ocam.camera.WhiteBalance
+import com.ocam.sequence.SequenceMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -254,14 +255,11 @@ private fun LandscapeControls(
                 }
 
                 Row(
-                    modifier = Modifier.padding(top = 10.dp),
+                    modifier = Modifier.padding(top = 10.dp).horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    FlatButton(
-                        label = state.settings.format.label,
-                        active = state.settings.format.writesRaw,
-                        onClick = viewModel::cycleFormat,
-                    )
+                    FormatButton(state, viewModel)
+                    SequenceButton(state, viewModel)
                     FlatButton(
                         label = "SET",
                         active = state.settingsOpen,
@@ -281,6 +279,7 @@ private fun LandscapeControls(
                     busy = state.busy || state.countdown != null,
                     enabled = state.selectedLensId != null,
                     onClick = viewModel::shutter,
+                    running = state.sequence != null,
                     modifier = Modifier.align(Alignment.Center),
                 )
                 Column(
@@ -389,6 +388,11 @@ private fun CameraPreview(
                 PreviewTexture(state, viewModel, onTextureView)
                 AnalysisOverlay(frame, modifier = Modifier.fillMaxSize())
                 state.subject?.let { SubjectOverlay(it, modifier = Modifier.fillMaxSize()) }
+            }
+
+            // The picture being built replaces the live frame, at the frame's own scale.
+            state.sequence?.let {
+                SequenceOverlay(it, viewModel::toggleSequenceHold, Modifier.fillMaxSize())
             }
 
             // Composition aids stay at the frame's own scale: they describe the picture, not
@@ -667,6 +671,28 @@ private fun Controls(state: CameraUiState, viewModel: CameraViewModel, frame: Fr
     }
 }
 
+/** A run writes a JPEG whatever this is set to, so while one is chosen it says that and rests. */
+@Composable
+private fun FormatButton(state: CameraUiState, viewModel: CameraViewModel) {
+    val single = state.sequenceMode == SequenceMode.OFF
+    FlatButton(
+        label = if (single) state.settings.format.label else "JPEG",
+        active = single && state.settings.format.writesRaw,
+        enabled = single,
+        onClick = viewModel::cycleFormat,
+    )
+}
+
+@Composable
+private fun SequenceButton(state: CameraUiState, viewModel: CameraViewModel) {
+    FlatButton(
+        label = state.sequenceMode.label,
+        active = state.sequenceMode != SequenceMode.OFF,
+        enabled = !state.busy && state.sequence == null && state.countdown == null,
+        onClick = viewModel::cycleSequenceMode,
+    )
+}
+
 @Composable
 private fun LensRow(state: CameraUiState, viewModel: CameraViewModel) {
     Row(
@@ -690,11 +716,8 @@ private fun LensRow(state: CameraUiState, viewModel: CameraViewModel) {
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            FlatButton(
-                label = state.settings.format.label,
-                active = state.settings.format.writesRaw,
-                onClick = viewModel::cycleFormat,
-            )
+            FormatButton(state, viewModel)
+            SequenceButton(state, viewModel)
             FlatButton(label = "SET", active = state.settingsOpen, onClick = viewModel::openSettings)
         }
     }
@@ -714,6 +737,7 @@ private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel, frame: 
             busy = state.busy || state.countdown != null,
             enabled = state.selectedLensId != null,
             onClick = viewModel::shutter,
+            running = state.sequence != null,
         )
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
             Column(modifier = Modifier.width(96.dp)) {

@@ -1,6 +1,7 @@
 package com.ocam.camera
 
 import android.content.Context
+import com.ocam.sequence.SequenceOptions
 
 /**
  * The standing choices: which file types the app may write, and what to make of this phone's
@@ -74,6 +75,17 @@ class AppSettings(context: Context) {
             .putBoolean(KEY_VOLUME_SHUTTER, value.volumeShutter)
             .apply()
 
+    /** How the modes that build a picture behave. Which mode is on is not kept: it surprises. */
+    var sequenceOptions: SequenceOptions
+        get() = SequenceOptions(
+            longSeconds = prefs.getInt(KEY_LONG_SECONDS, SequenceOptions().longSeconds),
+            buildUpVideo = prefs.getBoolean(KEY_BUILD_UP_VIDEO, SequenceOptions().buildUpVideo),
+        )
+        set(value) = prefs.edit()
+            .putInt(KEY_LONG_SECONDS, value.longSeconds)
+            .putBoolean(KEY_BUILD_UP_VIDEO, value.buildUpVideo)
+            .apply()
+
     /** A stored name from an older build may no longer exist; the default stands in for it. */
     private inline fun <reified T : Enum<T>> enumOr(name: String?, fallback: T): T =
         enumValues<T>().firstOrNull { it.name == name } ?: fallback
@@ -122,6 +134,8 @@ class AppSettings(context: Context) {
         const val KEY_FRAME = "aid_frame"
         const val KEY_TIMER = "aid_timer"
         const val KEY_VOLUME_SHUTTER = "aid_volume_shutter"
+        const val KEY_LONG_SECONDS = "sequence_long_seconds"
+        const val KEY_BUILD_UP_VIDEO = "sequence_build_up_video"
     }
 }
 

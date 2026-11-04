@@ -109,6 +109,26 @@ to write one back, so a HEIC is saved exactly as the camera made it. If grading 
 reason, including running out of memory on a large still, the photograph is written ungraded
 rather than not at all.
 
+**Many frames, one picture.** The button beside the file format moves the shutter between
+`ONE`, `PAINT`, `LONG` and `TRAIL`. In the last three a press starts taking frames at the ISO,
+shutter, focus and white balance already set, and the picture being built replaces the live
+frame while it happens.
+
+| Mode | What stays | Ends |
+| --- | --- | --- |
+| `PAINT` | the brightest light each point has seen, with the colour that light had | on the shutter |
+| `LONG` | the average of every frame, which is what an ND filter would have gathered | after the time set in settings |
+| `TRAIL` | as `PAINT`, ignoring more noise; set the shutter to 5 to 30 seconds | on the shutter |
+
+`HOLD` stops the light counting without ending the run, so someone can walk through the frame
+unseen. `PAINT` and `TRAIL` also write an MP4 of the picture appearing. Going to the background
+ends a run and writes what it has. Memory does not grow with the length of the run.
+
+The result is a JPEG of up to 13 megapixels from the camera's processed frames, not a full size
+file and not RAW: a sensor cannot deliver its full size fast enough to catch moving light, and
+the frames have to be merged as quickly as they arrive. Nothing moves the phone's exposure, so
+nothing corrects for movement either: these modes want a tripod.
+
 **RAW.** The format button cycles JPEG → RAW → RAW+JPEG on lenses that support it. RAW is
 written as DNG built from the exact capture result that produced the frame, so the black
 level, colour matrices, noise profile and lens shading in the file match the shot. Files
@@ -201,7 +221,12 @@ camera/
   Lenses.kt         enumerates openable cameras, reads per lens capabilities
   CameraController  device + session + capture pipeline, on its own threads
   CaptureSettings   what the camera is being told to do, and the white balance shift
-io/PhotoStore       JPEG and DNG writing through MediaStore
+  (the merge stream and the run's start and end live here too)
+sequence/
+  FrameMerger       the running maximum and average; no Android in it, and tested
+  SequenceRun       one run: frames in, picture and video out, on the merge thread
+  VideoWriter       the build-up video, through MediaCodec and MediaMuxer
+io/PhotoStore       JPEG, DNG and MP4 writing through MediaStore
 ui/                 Compose preview, the slider rows, lens picker
 ```
 
@@ -215,11 +240,16 @@ Preview, JPEG at full size and RAW at full size are configured as one session, w
 stream combination the platform guarantees for RAW-capable devices as long as the preview
 stays within 1080p - that bound is why the preview size is chosen the way it is.
 
+Choosing a mode that merges frames rebuilds the session as preview plus one YUV stream, the
+largest of at most 13 megapixels that runs at ten frames a second, falling back to 4K and 1080p
+where a lens refuses it.
+
 ## Deliberate limits
 
 - Portrait phones. The UI is locked to portrait and the preview assumes a portrait-natural
   device; photo rotation still follows how you hold the phone, via the orientation sensor.
-- No flash, no zoom slider, no video, no gallery. Lens selection replaces digital zoom.
+- No flash, no zoom slider, no video recording, no gallery. Lens selection replaces digital
+  zoom. The only video written is the build-up of a light painting or star trail.
 - Physical sub-cameras that are not backward compatible (depth and IR helpers) are skipped -
   they cannot produce a preview.
 - Some devices refuse to open a physical camera directly. The app retries briefly and then
