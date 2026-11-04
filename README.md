@@ -110,7 +110,7 @@ reason, including running out of memory on a large still, the photograph is writ
 rather than not at all.
 
 **Many frames, one picture.** The button beside the file format moves the shutter between
-`ONE`, `PAINT`, `LONG` and `TRAIL`. In the last three a press starts taking frames at the ISO,
+`ONE`, `HDR`, `PAINT`, `LONG` and `TRAIL`. In the last three a press starts taking frames at the ISO,
 shutter, focus and white balance already set, and the picture being built replaces the live
 frame while it happens.
 
@@ -128,6 +128,18 @@ The result is a JPEG of up to 13 megapixels from the camera's processed frames, 
 file and not RAW: a sensor cannot deliver its full size fast enough to catch moving light, and
 the frames have to be merged as quickly as they arrive. Nothing moves the phone's exposure, so
 nothing corrects for movement either: these modes want a tripod.
+
+**HDR.** In `HDR` a press takes three or five frames either side of the exposure set, by up to
+three stops, moving the shutter first and the ISO only where the shutter runs out. They are blended
+by exposure fusion: each part of the picture comes from the frames that exposed it well, through
+Laplacian pyramids so no seam shows. The frames are not aligned, so a moving subject or a moving
+phone shows as a ghost; hold still or use a tripod.
+
+The result is a JPEG of up to 13 megapixels, from the same stream as the modes above. On Android 14
+and later it is an Ultra HDR file where the frames found light brighter than the picture shows: a
+screen with the range shows those parts brighter, and everything else sees an ordinary JPEG. That
+gain treats the camera's frames as sRGB, so it is an estimate of the light rather than a measurement,
+and it is not graded by the film simulation. `KEEP HDR FRAMES` also writes each exposure, ungraded.
 
 **RAW.** The format button cycles JPEG → RAW → RAW+JPEG on lenses that support it. RAW is
 written as DNG built from the exact capture result that produced the frame, so the black
@@ -224,6 +236,8 @@ camera/
   (the merge stream and the run's start and end live here too)
 sequence/
   FrameMerger       the running maximum and average; no Android in it, and tested
+  ExposureFusion    the HDR blend and its gain map; no Android in it, and tested
+  BracketRun        one bracket: frames in, one picture or Ultra HDR file out
   SequenceRun       one run: frames in, picture and video out, on the merge thread
   VideoWriter       the build-up video, through MediaCodec and MediaMuxer
 io/PhotoStore       JPEG, DNG and MP4 writing through MediaStore

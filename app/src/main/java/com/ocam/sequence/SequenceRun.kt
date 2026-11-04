@@ -22,7 +22,16 @@ private const val PICTURE_INTERVAL_MS = 250L
 private const val PICTURE_LONG_SIDE = 640
 
 /** Matches the quality the camera's own encoder is asked for. */
-private const val JPEG_QUALITY = 97
+internal const val MERGED_JPEG_QUALITY = 97
+
+internal fun encodeNv21Jpeg(pixels: ByteArray, width: Int, height: Int): ByteArray =
+    ByteArrayOutputStream(pixels.size / 4).use { out ->
+        val image = YuvImage(pixels, ImageFormat.NV21, width, height, null)
+        check(image.compressToJpeg(Rect(0, 0, width, height), MERGED_JPEG_QUALITY, out)) {
+            "The JPEG encoder refused the frame"
+        }
+        out.toByteArray()
+    }
 
 /** Fixed when the shutter is pressed, like everything else a shot writes. */
 class SequencePlan(
@@ -128,13 +137,7 @@ class SequenceRun(
     private fun encode(): ByteArray {
         val pixels = ByteArray(width * height * 3 / 2)
         merger.writeNv21(pixels)
-        val jpeg = ByteArrayOutputStream(pixels.size / 4).use { out ->
-            val image = YuvImage(pixels, ImageFormat.NV21, width, height, null)
-            check(image.compressToJpeg(Rect(0, 0, width, height), JPEG_QUALITY, out)) {
-                "The JPEG encoder refused the frame"
-            }
-            out.toByteArray()
-        }
+        val jpeg = encodeNv21Jpeg(pixels, width, height)
         return film()?.let { StillGrader.grade(jpeg, false, it) } ?: jpeg
     }
 

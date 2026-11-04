@@ -30,11 +30,15 @@ import android.view.Surface
 import com.ocam.io.PhotoStore
 import com.ocam.lut.LutPipeline
 import com.ocam.lut.StillGrader
+import com.ocam.sequence.BracketPlan
+import com.ocam.sequence.BracketRun
 import com.ocam.sequence.SequenceMode
 import com.ocam.sequence.SequenceOptions
 import com.ocam.sequence.SequencePlan
 import com.ocam.sequence.SequenceProgress
 import com.ocam.sequence.SequenceRun
+import com.ocam.sequence.bracketExposure
+import com.ocam.sequence.bracketStops
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -207,8 +211,11 @@ class CameraController(context: Context, private val listener: Listener) {
     private var sequence: SequenceRun? = null
     /** The same run as the merge thread sees it, which stops taking frames a little later. */
     @Volatile private var mergingRun: SequenceRun? = null
-    /** The run being written out, which is what the shutter is still waiting for. */
-    private var savingRun: SequenceRun? = null
+    /** The bracket being taken, as each thread sees it, like the run above. */
+    private var bracket: BracketRun? = null
+    @Volatile private var mergingBracket: BracketRun? = null
+    /** The run or bracket being written out, which is what the shutter is still waiting for. */
+    private var savingRun: Any? = null
 
     /**
      * Which shot each still frame belongs to, by sensor timestamp. A frame that lands after the
@@ -305,7 +312,7 @@ class CameraController(context: Context, private val listener: Listener) {
      */
     fun rackFocusAt(normalizedX: Float, normalizedY: Float) {
         cameraHandler.post {
-            if (sequence != null) return@post
+            if (sequence != null || bracket != null) return@post
             if (!capabilities.hasAutoFocus) {
                 listener.onStatus("This lens cannot search for focus")
                 return@post
@@ -429,6 +436,7 @@ class CameraController(context: Context, private val listener: Listener) {
     private fun closeInternal() {
         // A run cut short by the app going away is still a picture: it is written, not dropped.
         endRun()
+        endBracket()
         savingRun = null
         cameraHandler.removeCallbacks(convergenceTimeout)
         cameraHandler.removeCallbacks(deliveryTimeout)
@@ -674,7 +682,7 @@ class CameraController(context: Context, private val listener: Listener) {
 
     private fun applyToPreview() {
         // The running request carries the frames being merged; a preview request would stop them.
-        if (sequence != null) return
+        if (sequence != null || bracket != null) return
         val builder = previewBuilder ?: return
         val active = session ?: return
         applySettings(builder)
@@ -1104,6 +1112,10 @@ class CameraController(context: Context, private val listener: Listener) {
             rackingFocus = false
             cameraHandler.removeCallbacks(rackTimeout)
         }
+        if (sequenceMode.bracket) {
+            startBracket(options, camera, active, reader)
+            return
+        }
 
         val current = settings
         val mode = sequenceMode
@@ -1180,15 +1192,143 @@ class CameraController(context: Context, private val listener: Listener) {
                 Log.e(TAG, "Cannot finish the run", t)
                 listener.onError("Cannot save the picture: ${t.javaClass.simpleName}")
             }
-            cameraHandler.post {
-                if (savingRun === run) {
-                    savingRun = null
-                    finishCapture()
-                } else {
-                    // The lens shut while this was being written, and the state went with it.
-                    listener.onCaptureBusy(capturing)
+            whenWritten(run)
+        }
+    }
+
+    /** Let go of the shutter, once the run that was holding it is in the files. */
+    private fun whenWritten(run: Any) {
+        cameraHandler.post {
+            if (savingRun === run) {
+                savingRun = null
+                finishCapture()
+            } else {
+                // The lens shut while this was being written, and the state went with it.
+                listener.onCaptureBusy(capturing)
+            }
+        }
+    }
+
+    /**
+     * A few frames at different exposures, one straight after the other. The preview waits: frames
+     * this far apart in brightness are not something to show, and nothing should come between them.
+     */
+    private fun startBracket(
+        options: SequenceOptions,
+        camera: CameraDevice,
+        active: CameraCaptureSession,
+        reader: ImageReader,
+    ) {
+        val current = settings
+        val iso = capabilities.isoRange?.clamp(current.iso) ?: current.iso
+        val exposure = capabilities.exposureTimeRange?.clamp(current.exposureTimeNs)
+            ?: current.exposureTimeNs
+        val stops = bracketStops(options.hdrFrames, options.hdrSpread.toFloat())
+        val run = BracketRun(
+            context = appContext,
+            width = reader.width,
+            height = reader.height,
+            plan = BracketPlan(
+                baseName = PhotoStore.newBaseName(System.currentTimeMillis()),
+                orientation = outputOrientation(),
+                pose = if (current.recordPose) pose.current() else Pose.NONE,
+                iso = iso,
+                exposureNs = exposure,
+                frames = stops.size,
+                keepFrames = options.hdrKeepFrames,
+                ultraHdr = options.ultraHdr,
+            ),
+            film = { film },
+            onSaved = { listener.onStatus("Saved $it") },
+            onProblem = listener::onError,
+        )
+        try {
+            var totalNs = 0L
+            val requests = stops.map { stop ->
+                val isos = capabilities.isoRange
+                val times = capabilities.exposureTimeRange
+                val (frameIso, frameExposure) = bracketExposure(
+                    iso, exposure, stop,
+                    isos?.lower ?: iso, isos?.upper ?: iso,
+                    times?.lower ?: exposure, times?.upper ?: exposure,
+                )
+                totalNs += frameExposure
+                camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).run {
+                    addTarget(reader.surface)
+                    applySettings(this)
+                    set(CaptureRequest.SENSOR_SENSITIVITY, frameIso)
+                    set(CaptureRequest.SENSOR_EXPOSURE_TIME, frameExposure)
+                    set(CaptureRequest.SENSOR_FRAME_DURATION, frameExposure)
+                    setTag(run)
+                    build()
                 }
             }
+            bracket = run
+            mergingBracket = run
+            capturing = true
+            state = State.CAPTURING
+            listener.onCaptureBusy(true)
+            active.stopRepeating()
+            active.captureBurst(requests, bracketCallback, cameraHandler)
+            cameraHandler.postDelayed(bracketTimeout, totalNs / 1_000_000L + DELIVERY_TIMEOUT_MS)
+        } catch (e: Exception) {
+            Log.e(TAG, "Cannot start the bracket", e)
+            bracket = null
+            mergingBracket = null
+            listener.onError("Cannot start: ${e.javaClass.simpleName}")
+            finishCapture()
+            resumePreview()
+        }
+    }
+
+    /** Back to the preview, and write out whatever arrived. */
+    private fun endBracket() {
+        val run = bracket ?: return
+        bracket = null
+        cameraHandler.removeCallbacks(bracketTimeout)
+        savingRun = run
+        resumePreview()
+        listener.onStatus("Merging the bracket")
+        mergeHandler.post {
+            mergingBracket = null
+            try {
+                run.finish()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Cannot finish the bracket", t)
+                listener.onError("Cannot save the picture: ${t.javaClass.simpleName}")
+            }
+            whenWritten(run)
+        }
+    }
+
+    private val bracketTimeout = Runnable { endBracket() }
+
+    private fun endBracketIfDone(run: BracketRun, done: Boolean) {
+        if (done) cameraHandler.post { if (bracket === run) endBracket() }
+    }
+
+    private val bracketCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) {
+            val run = request.tag as? BracketRun ?: return
+            val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+            val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                ?: request.get(CaptureRequest.SENSOR_SENSITIVITY) ?: return
+            val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                ?: request.get(CaptureRequest.SENSOR_EXPOSURE_TIME) ?: return
+            mergeHandler.post { endBracketIfDone(run, run.offerReading(timestamp, iso, exposure)) }
+        }
+
+        override fun onCaptureFailed(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            failure: CaptureFailure,
+        ) {
+            val run = request.tag as? BracketRun ?: return
+            mergeHandler.post { endBracketIfDone(run, run.offerFailure()) }
         }
     }
 
@@ -1204,8 +1344,11 @@ class CameraController(context: Context, private val listener: Listener) {
         val image = runCatching { reader.acquireNextImage() }.getOrNull()
             ?: return@OnImageAvailableListener
         try {
+            val taking = mergingBracket
             val run = mergingRun
-            if (run != null && run.offer(image)) {
+            if (taking != null) {
+                endBracketIfDone(taking, taking.offer(image))
+            } else if (run != null && run.offer(image)) {
                 cameraHandler.post { if (sequence === run) endRun() }
             }
         } catch (t: Throwable) {

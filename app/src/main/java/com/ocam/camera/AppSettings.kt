@@ -80,10 +80,18 @@ class AppSettings(context: Context) {
         get() = SequenceOptions(
             longSeconds = prefs.getInt(KEY_LONG_SECONDS, SequenceOptions().longSeconds),
             buildUpVideo = prefs.getBoolean(KEY_BUILD_UP_VIDEO, SequenceOptions().buildUpVideo),
+            hdrFrames = prefs.getInt(KEY_HDR_FRAMES, SequenceOptions().hdrFrames),
+            hdrSpread = prefs.getInt(KEY_HDR_SPREAD, SequenceOptions().hdrSpread),
+            hdrKeepFrames = prefs.getBoolean(KEY_HDR_KEEP_FRAMES, SequenceOptions().hdrKeepFrames),
+            ultraHdr = prefs.getBoolean(KEY_ULTRA_HDR, SequenceOptions().ultraHdr),
         )
         set(value) = prefs.edit()
             .putInt(KEY_LONG_SECONDS, value.longSeconds)
             .putBoolean(KEY_BUILD_UP_VIDEO, value.buildUpVideo)
+            .putInt(KEY_HDR_FRAMES, value.hdrFrames)
+            .putInt(KEY_HDR_SPREAD, value.hdrSpread)
+            .putBoolean(KEY_HDR_KEEP_FRAMES, value.hdrKeepFrames)
+            .putBoolean(KEY_ULTRA_HDR, value.ultraHdr)
             .apply()
 
     /** A stored name from an older build may no longer exist; the default stands in for it. */
@@ -136,6 +144,10 @@ class AppSettings(context: Context) {
         const val KEY_VOLUME_SHUTTER = "aid_volume_shutter"
         const val KEY_LONG_SECONDS = "sequence_long_seconds"
         const val KEY_BUILD_UP_VIDEO = "sequence_build_up_video"
+        const val KEY_HDR_FRAMES = "hdr_frames"
+        const val KEY_HDR_SPREAD = "hdr_spread"
+        const val KEY_HDR_KEEP_FRAMES = "hdr_keep_frames"
+        const val KEY_ULTRA_HDR = "hdr_ultra"
     }
 }
 

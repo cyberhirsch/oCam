@@ -34,12 +34,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.ocam.CameraUiState
+import android.os.Build
 import com.ocam.CameraViewModel
 import com.ocam.appVersion
 import com.ocam.camera.CropFrame
 import com.ocam.camera.GridMode
 import com.ocam.camera.Lens
 import com.ocam.camera.SelfTimer
+import com.ocam.sequence.HDR_FRAMES
+import com.ocam.sequence.HDR_SPREADS
 import com.ocam.sequence.LONG_EXPOSURE_SECONDS
 
 /**
@@ -140,7 +143,7 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 modifier = Modifier.padding(top = 22.dp, bottom = 4.dp),
             )
             Text(
-                text = "The button beside the file format moves the shutter between ONE, PAINT, " +
+                text = "The button beside the file format moves the shutter between ONE, HDR, PAINT, " +
                     "LONG and TRAIL. These write a JPEG of up to 13 megapixels, made from the " +
                     "camera's own frames at the ISO and shutter set.",
                 color = Color(0x88FFFFFF),
@@ -164,6 +167,38 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 enabled = sequence.buildUpVideo,
                 available = true,
                 onChange = { on -> viewModel.updateSequenceOptions { it.copy(buildUpVideo = on) } },
+            )
+            ChoiceRow(
+                name = "HDR FRAMES",
+                options = HDR_FRAMES,
+                label = { "$it" },
+                selected = sequence.hdrFrames,
+                onSelect = { frames -> viewModel.updateSequenceOptions { it.copy(hdrFrames = frames) } },
+            )
+            ChoiceRow(
+                name = "HDR REACH",
+                options = HDR_SPREADS,
+                label = { "±$it" },
+                selected = sequence.hdrSpread,
+                onSelect = { stops -> viewModel.updateSequenceOptions { it.copy(hdrSpread = stops) } },
+            )
+            ToggleRow(
+                name = "KEEP HDR FRAMES",
+                note = "Also write each exposure as its own JPEG, without the film simulation",
+                enabled = sequence.hdrKeepFrames,
+                available = true,
+                onChange = { on -> viewModel.updateSequenceOptions { it.copy(hdrKeepFrames = on) } },
+            )
+            ToggleRow(
+                name = "ULTRA HDR",
+                note = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    "HDR pictures carry a gain map, so a screen with the range shows the bright parts brighter"
+                } else {
+                    "Needs Android 14"
+                },
+                enabled = sequence.ultraHdr && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                available = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                onChange = { on -> viewModel.updateSequenceOptions { it.copy(ultraHdr = on) } },
             )
 
             Text(

@@ -219,7 +219,7 @@ private class AverageMerger(width: Int, height: Int) : FrameMerger(width, height
  * Split [rows] between the processors, on whole pairs of rows. The camera does not wait: a merge
  * that takes longer than a frame shows up as a gap in the light.
  */
-private inline fun inBands(rows: Int, crossinline work: (from: Int, to: Int) -> Unit) {
+internal inline fun inBands(rows: Int, crossinline work: (from: Int, to: Int) -> Unit) {
     val bands = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
     IntStream.range(0, bands).parallel().forEach { band ->
         val from = (rows.toLong() * band / bands).toInt() and 1.inv()
