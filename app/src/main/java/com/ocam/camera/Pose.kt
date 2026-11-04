@@ -73,6 +73,8 @@ class PoseTracker(context: Context) {
     @Volatile private var roll: Float? = null
 
     private var listening = false
+    private var sensing = false
+    private var motionHeld = false
 
     /** Whether the owner has granted a position at all; orientation needs no permission. */
     val locationAllowed: Boolean
@@ -81,20 +83,58 @@ class PoseTracker(context: Context) {
             ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
 
+    /** Whether this phone can say which way it is pointing at all. */
+    val canSenseMotion: Boolean get() = rotationVector != null
+
+    @Synchronized
     fun start() {
         if (listening) return
         listening = true
-        rotationVector?.let {
-            sensors?.registerListener(sensorListener, it, SensorManager.SENSOR_DELAY_UI)
-        }
+        updateSensor()
         startLocation()
     }
 
+    @Synchronized
     fun stop() {
-        if (!listening) return
+        motionHeld = false
+        if (!listening && !sensing) return
         listening = false
-        sensors?.unregisterListener(sensorListener)
+        updateSensor()
         runCatching { locations?.removeUpdates(locationListener) }
+    }
+
+    /**
+     * Keep the rotation vector running whatever the GPS & COMPASS switch says, for a panorama that
+     * has to know how far the camera has turned. Nothing from it reaches a file this way.
+     */
+    @Synchronized
+    fun holdMotion(held: Boolean) {
+        motionHeld = held
+        updateSensor()
+    }
+
+    private fun updateSensor() {
+        val wanted = listening || motionHeld
+        if (wanted == sensing) return
+        sensing = wanted
+        if (wanted) {
+            rotationVector?.let {
+                sensors?.registerListener(sensorListener, it, SensorManager.SENSOR_DELAY_UI)
+            }
+        } else {
+            sensors?.unregisterListener(sensorListener)
+            // Whatever comes next must not start from where the phone used to point.
+            yaw = null
+            pitch = null
+            roll = null
+        }
+    }
+
+    /** Which way the lens points now, by magnetic north, in degrees; null until the sensor says. */
+    fun heading(): Pair<Float, Float>? {
+        val turned = yaw ?: return null
+        val tilted = pitch ?: return null
+        return turned to tilted
     }
 
     /** What to stamp into a file written now. */

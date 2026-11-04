@@ -219,7 +219,7 @@ object ExposureFusion {
             (luma[bottom].toInt() and 0xFF) + (luma[bottom + 1].toInt() and 0xFF)
     }
 
-    private class Plane(val width: Int, val height: Int, val data: FloatArray = FloatArray(width * height))
+    internal class Plane(val width: Int, val height: Int, val data: FloatArray = FloatArray(width * height))
 
     /**
      * One channel through the pyramids.
@@ -261,7 +261,7 @@ object ExposureFusion {
     }
 
     /** Burt and Adelson's five taps, kept to every other sample. */
-    private fun down(source: Plane): Plane {
+    internal fun down(source: Plane): Plane {
         val width = source.width
         val height = source.height
         val data = source.data
@@ -316,7 +316,7 @@ object ExposureFusion {
         }
     }
 
-    private fun addUpsampled(target: Plane, next: Plane) {
+    internal fun addUpsampled(target: Plane, next: Plane) {
         val width = target.width
         val nextWidth = next.width
         inBands(target.height) { from, to ->

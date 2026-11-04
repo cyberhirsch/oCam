@@ -84,6 +84,8 @@ class AppSettings(context: Context) {
             hdrSpread = prefs.getInt(KEY_HDR_SPREAD, SequenceOptions().hdrSpread),
             hdrKeepFrames = prefs.getBoolean(KEY_HDR_KEEP_FRAMES, SequenceOptions().hdrKeepFrames),
             ultraHdr = prefs.getBoolean(KEY_ULTRA_HDR, SequenceOptions().ultraHdr),
+            stackFrames = prefs.getInt(KEY_STACK_FRAMES, SequenceOptions().stackFrames),
+            stackReach = prefs.getInt(KEY_STACK_REACH, SequenceOptions().stackReach),
         )
         set(value) = prefs.edit()
             .putInt(KEY_LONG_SECONDS, value.longSeconds)
@@ -92,6 +94,8 @@ class AppSettings(context: Context) {
             .putInt(KEY_HDR_SPREAD, value.hdrSpread)
             .putBoolean(KEY_HDR_KEEP_FRAMES, value.hdrKeepFrames)
             .putBoolean(KEY_ULTRA_HDR, value.ultraHdr)
+            .putInt(KEY_STACK_FRAMES, value.stackFrames)
+            .putInt(KEY_STACK_REACH, value.stackReach)
             .apply()
 
     /** A stored name from an older build may no longer exist; the default stands in for it. */
@@ -148,6 +152,8 @@ class AppSettings(context: Context) {
         const val KEY_HDR_SPREAD = "hdr_spread"
         const val KEY_HDR_KEEP_FRAMES = "hdr_keep_frames"
         const val KEY_ULTRA_HDR = "hdr_ultra"
+        const val KEY_STACK_FRAMES = "stack_frames"
+        const val KEY_STACK_REACH = "stack_reach"
     }
 }
 

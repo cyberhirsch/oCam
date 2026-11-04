@@ -299,16 +299,19 @@ fun SequenceOverlay(progress: SequenceProgress, onHold: () -> Unit, modifier: Mo
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
             )
-            FlatButton(
-                label = if (progress.paused) "GO ON" else "HOLD",
-                active = progress.paused,
-                onClick = onHold,
-            )
+            if (progress.holds) {
+                FlatButton(
+                    label = if (progress.paused) "GO ON" else "HOLD",
+                    active = progress.paused,
+                    onClick = onHold,
+                )
+            }
         }
     }
 }
 
 private fun sequenceText(progress: SequenceProgress): String {
+    progress.note?.let { return "${progress.mode.label} · $it" }
     val seconds = progress.exposedNs / 1_000_000_000.0
     val time = progress.targetNs?.let {
         String.format(Locale.US, "%.1f / %d s", seconds, it / 1_000_000_000L)

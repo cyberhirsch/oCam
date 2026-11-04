@@ -44,6 +44,8 @@ import com.ocam.camera.SelfTimer
 import com.ocam.sequence.HDR_FRAMES
 import com.ocam.sequence.HDR_SPREADS
 import com.ocam.sequence.LONG_EXPOSURE_SECONDS
+import com.ocam.sequence.STACK_FRAMES
+import com.ocam.sequence.STACK_REACHES
 
 /**
  * The standing choices: which file types to write, what to do about the lens, and what to make of
@@ -143,9 +145,9 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 modifier = Modifier.padding(top = 22.dp, bottom = 4.dp),
             )
             Text(
-                text = "The button beside the file format moves the shutter between ONE, HDR, PAINT, " +
-                    "LONG and TRAIL. These write a JPEG of up to 13 megapixels, made from the " +
-                    "camera's own frames at the ISO and shutter set.",
+                text = "The button beside the file format moves the shutter between ONE, HDR, STACK, " +
+                    "PANO, PAINT, LONG and TRAIL. These write a JPEG made from the camera's own " +
+                    "frames of up to 13 megapixels, at the ISO and shutter set.",
                 color = Color(0x88FFFFFF),
                 fontSize = 11.sp,
                 modifier = Modifier.padding(bottom = 4.dp),
@@ -199,6 +201,20 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 enabled = sequence.ultraHdr && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
                 available = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
                 onChange = { on -> viewModel.updateSequenceOptions { it.copy(ultraHdr = on) } },
+            )
+            ChoiceRow(
+                name = "STACK FRAMES",
+                options = STACK_FRAMES,
+                label = { "$it" },
+                selected = sequence.stackFrames,
+                onSelect = { frames -> viewModel.updateSequenceOptions { it.copy(stackFrames = frames) } },
+            )
+            ChoiceRow(
+                name = "STACK REACH",
+                options = STACK_REACHES,
+                label = { if (it == 0) "∞" else "×$it" },
+                selected = sequence.stackReach,
+                onSelect = { reach -> viewModel.updateSequenceOptions { it.copy(stackReach = reach) } },
             )
 
             Text(

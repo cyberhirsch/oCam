@@ -24,10 +24,15 @@ private const val PICTURE_LONG_SIDE = 640
 /** Matches the quality the camera's own encoder is asked for. */
 internal const val MERGED_JPEG_QUALITY = 97
 
-internal fun encodeNv21Jpeg(pixels: ByteArray, width: Int, height: Int): ByteArray =
+internal fun encodeNv21Jpeg(
+    pixels: ByteArray,
+    width: Int,
+    height: Int,
+    area: Rect = Rect(0, 0, width, height),
+): ByteArray =
     ByteArrayOutputStream(pixels.size / 4).use { out ->
         val image = YuvImage(pixels, ImageFormat.NV21, width, height, null)
-        check(image.compressToJpeg(Rect(0, 0, width, height), MERGED_JPEG_QUALITY, out)) {
+        check(image.compressToJpeg(area, MERGED_JPEG_QUALITY, out)) {
             "The JPEG encoder refused the frame"
         }
         out.toByteArray()

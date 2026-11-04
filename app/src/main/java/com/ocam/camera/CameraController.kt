@@ -32,13 +32,18 @@ import com.ocam.lut.LutPipeline
 import com.ocam.lut.StillGrader
 import com.ocam.sequence.BracketPlan
 import com.ocam.sequence.BracketRun
+import com.ocam.sequence.PanoramaPlan
+import com.ocam.sequence.PanoramaRun
 import com.ocam.sequence.SequenceMode
 import com.ocam.sequence.SequenceOptions
 import com.ocam.sequence.SequencePlan
 import com.ocam.sequence.SequenceProgress
 import com.ocam.sequence.SequenceRun
+import com.ocam.sequence.StackPlan
+import com.ocam.sequence.StackRun
 import com.ocam.sequence.bracketExposure
 import com.ocam.sequence.bracketStops
+import com.ocam.sequence.stackDistances
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -74,6 +79,15 @@ private const val MAX_MERGE_PIXELS = 13_000_000L
 
 /** A merged stream slower than this would leave gaps in moving light. */
 private const val MERGE_FRAME_DURATION_NS = 100_000_000L
+
+/** How long a lens gets to reach the next distance of a stack before the frame is taken anyway. */
+private const val STACK_SETTLE_MS = 700L
+
+/** Results to see at a new distance, so that a lens yet to start moving is not taken as settled. */
+private const val STACK_SETTLE_FRAMES = 2
+
+/** A shutter longer than this smears a sweep of a panorama. */
+private const val SWEEP_BLUR_NS = 33_000_000L
 
 /**
  * Owns the Camera2 device, session and capture pipeline. Every camera call happens on a single
@@ -214,6 +228,15 @@ class CameraController(context: Context, private val listener: Listener) {
     /** The bracket being taken, as each thread sees it, like the run above. */
     private var bracket: BracketRun? = null
     @Volatile private var mergingBracket: BracketRun? = null
+    /** The stack being taken, as each thread sees it, and how far along the lens is. */
+    private var stack: StackRun? = null
+    @Volatile private var mergingStack: StackRun? = null
+    private var stackIndex = 0
+    private var stackFramesSeen = 0
+    private var stackShotSent = false
+    /** The panorama being swept, as each thread sees it. */
+    private var panorama: PanoramaRun? = null
+    @Volatile private var mergingPanorama: PanoramaRun? = null
     /** The run or bracket being written out, which is what the shutter is still waiting for. */
     private var savingRun: Any? = null
 
@@ -285,6 +308,8 @@ class CameraController(context: Context, private val listener: Listener) {
         cameraHandler.post {
             val rebuild = (mode == SequenceMode.OFF) != (sequenceMode == SequenceMode.OFF)
             sequenceMode = mode
+            // The sensor needs a moment to say anything, so it starts before the shutter is pressed.
+            pose.holdMotion(mode.panorama)
             if (rebuild && device != null) reconfigureForFormat()
         }
     }
@@ -295,7 +320,11 @@ class CameraController(context: Context, private val listener: Listener) {
 
     /** End the run and write what it has gathered. */
     fun stopSequence() {
-        cameraHandler.post { endRun() }
+        cameraHandler.post {
+            endRun()
+            endStack()
+            endPanorama()
+        }
     }
 
     /** Stop gathering light without ending the run, to walk through the frame unseen. */
@@ -312,7 +341,7 @@ class CameraController(context: Context, private val listener: Listener) {
      */
     fun rackFocusAt(normalizedX: Float, normalizedY: Float) {
         cameraHandler.post {
-            if (sequence != null || bracket != null) return@post
+            if (sequence != null || bracket != null || stack != null || panorama != null) return@post
             if (!capabilities.hasAutoFocus) {
                 listener.onStatus("This lens cannot search for focus")
                 return@post
@@ -437,6 +466,8 @@ class CameraController(context: Context, private val listener: Listener) {
         // A run cut short by the app going away is still a picture: it is written, not dropped.
         endRun()
         endBracket()
+        endStack()
+        endPanorama()
         savingRun = null
         cameraHandler.removeCallbacks(convergenceTimeout)
         cameraHandler.removeCallbacks(deliveryTimeout)
@@ -682,7 +713,7 @@ class CameraController(context: Context, private val listener: Listener) {
 
     private fun applyToPreview() {
         // The running request carries the frames being merged; a preview request would stop them.
-        if (sequence != null || bracket != null) return
+        if (sequence != null || bracket != null || stack != null || panorama != null) return
         val builder = previewBuilder ?: return
         val active = session ?: return
         applySettings(builder)
@@ -1116,6 +1147,14 @@ class CameraController(context: Context, private val listener: Listener) {
             startBracket(options, camera, active, reader)
             return
         }
+        if (sequenceMode.stack) {
+            startStack(options, reader)
+            return
+        }
+        if (sequenceMode.panorama) {
+            startPanorama(camera, active, preview, reader)
+            return
+        }
 
         val current = settings
         val mode = sequenceMode
@@ -1332,6 +1371,311 @@ class CameraController(context: Context, private val listener: Listener) {
         }
     }
 
+    /**
+     * A frame at each distance, nearest first. Unlike a bracket this cannot be sent as a burst: a lens
+     * takes its time to move, and has to be seen to have arrived before each frame is taken. The
+     * preview keeps running meanwhile, so the sweep of focus can be watched.
+     */
+    private fun startStack(options: SequenceOptions, reader: ImageReader) {
+        if (!capabilities.supportsManualFocus) {
+            listener.onError("This lens cannot be told where to focus")
+            return
+        }
+        val current = settings
+        val near = current.focusDiopters.coerceIn(0f, capabilities.minFocusDistance)
+        val distances = stackDistances(near, options.stackFrames, options.stackReach)
+        if (distances.isEmpty()) {
+            listener.onStatus("Focus is at infinity: set it on the nearest thing first")
+            return
+        }
+        val run = try {
+            StackRun(
+                context = appContext,
+                width = reader.width,
+                height = reader.height,
+                plan = StackPlan(
+                    baseName = PhotoStore.newBaseName(System.currentTimeMillis()),
+                    orientation = outputOrientation(),
+                    pose = if (current.recordPose) pose.current() else Pose.NONE,
+                    iso = capabilities.isoRange?.clamp(current.iso) ?: current.iso,
+                    exposureNs = capabilities.exposureTimeRange?.clamp(current.exposureTimeNs)
+                        ?: current.exposureTimeNs,
+                    distances = distances,
+                    sensorOrientation = sensorOrientation,
+                    mirrored = facing == CameraCharacteristics.LENS_FACING_FRONT,
+                ),
+                film = { film },
+                onProgress = listener::onSequence,
+                onSaved = { listener.onStatus("Saved $it") },
+                onProblem = listener::onError,
+            )
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "No room for a stack at ${reader.width}x${reader.height}", e)
+            listener.onError("Not enough memory to merge frames this size")
+            return
+        }
+        stack = run
+        mergingStack = run
+        capturing = true
+        stackIndex = 0
+        mergeHandler.post { run.publish() }
+        moveToNextFocus()
+    }
+
+    /** One request for a stack's frames: everything as set, except where the lens is told to be. */
+    private fun stackRequest(template: Int, distance: Float, tag: Any): CaptureRequest.Builder? {
+        val camera = device ?: return null
+        return camera.createCaptureRequest(template).apply {
+            applySettings(this)
+            set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+            set(CaptureRequest.LENS_FOCUS_DISTANCE, distance)
+            set(
+                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF,
+            )
+            setTag(tag)
+        }
+    }
+
+    private fun moveToNextFocus() {
+        val run = stack ?: return
+        val active = session
+        val preview = previewSurface
+        val distance = run.plan.distances.getOrNull(stackIndex)
+        if (active == null || preview == null || distance == null) {
+            endStack()
+            return
+        }
+        stackFramesSeen = 0
+        stackShotSent = false
+        try {
+            val builder = stackRequest(CameraDevice.TEMPLATE_PREVIEW, distance, stackIndex)
+            if (builder == null) {
+                endStack()
+                return
+            }
+            builder.addTarget(preview)
+            active.setRepeatingRequest(builder.build(), stackFocusCallback, cameraHandler)
+            cameraHandler.removeCallbacks(stackSettled)
+            cameraHandler.postDelayed(stackSettled, STACK_SETTLE_MS)
+        } catch (e: Exception) {
+            Log.e(TAG, "Cannot move the focus", e)
+            listener.onError("Cannot focus: ${e.javaClass.simpleName}")
+            endStack()
+        }
+    }
+
+    private val stackSettled = Runnable { takeStackFrame() }
+
+    private val stackTimeout = Runnable {
+        listener.onError("The camera did not deliver a frame of the stack")
+        endStack()
+    }
+
+    private val stackFocusCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) {
+            publishLiveValues(result)
+            if (request.tag != stackIndex) return
+            stackFramesSeen++
+            val lens = result.get(CaptureResult.LENS_STATE)
+            val still = lens == null || lens == CameraMetadata.LENS_STATE_STATIONARY
+            if (still && stackFramesSeen >= STACK_SETTLE_FRAMES) takeStackFrame()
+        }
+    }
+
+    private fun takeStackFrame() {
+        if (stackShotSent) return
+        val run = stack ?: return
+        val active = session
+        val reader = mergeReader
+        val distance = run.plan.distances.getOrNull(stackIndex)
+        if (active == null || reader == null || distance == null) {
+            endStack()
+            return
+        }
+        stackShotSent = true
+        cameraHandler.removeCallbacks(stackSettled)
+        try {
+            val builder = stackRequest(CameraDevice.TEMPLATE_STILL_CAPTURE, distance, run)
+            if (builder == null) {
+                endStack()
+                return
+            }
+            builder.addTarget(reader.surface)
+            active.capture(builder.build(), stackFrameCallback, cameraHandler)
+            cameraHandler.removeCallbacks(stackTimeout)
+            cameraHandler.postDelayed(stackTimeout, run.plan.exposureNs / 1_000_000L + DELIVERY_TIMEOUT_MS)
+        } catch (e: Exception) {
+            Log.e(TAG, "Cannot take a frame of the stack", e)
+            listener.onError("Cannot take a frame: ${e.javaClass.simpleName}")
+            endStack()
+        }
+    }
+
+    private val stackFrameCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureFailed(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            failure: CaptureFailure,
+        ) {
+            // A gap in the depth covered, not a reason to throw the rest away.
+            listener.onStatus("Lost a frame of the stack")
+            (request.tag as? StackRun)?.let { advanceStack(it) }
+        }
+    }
+
+    /** The last frame is done with, so on to the next distance. */
+    private fun advanceStack(run: StackRun) {
+        if (stack !== run) return
+        cameraHandler.removeCallbacks(stackTimeout)
+        stackIndex++
+        if (stackIndex >= run.plan.distances.size) endStack() else moveToNextFocus()
+    }
+
+    /** Back to the preview and the focus that was set, and write out what was merged. */
+    private fun endStack() {
+        val run = stack ?: return
+        stack = null
+        cameraHandler.removeCallbacks(stackSettled)
+        cameraHandler.removeCallbacks(stackTimeout)
+        savingRun = run
+        listener.onCaptureBusy(true)
+        resumePreview()
+        listener.onStatus("Merging the stack")
+        mergeHandler.post {
+            mergingStack = null
+            listener.onSequence(null)
+            try {
+                run.finish()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Cannot finish the stack", t)
+                listener.onError("Cannot save the picture: ${t.javaClass.simpleName}")
+            }
+            whenWritten(run)
+        }
+    }
+
+    /**
+     * A stream of frames as the camera turns, of which only those far enough on are kept. Everything
+     * about the exposure stays as set, which is what lets the frames join without any evening out.
+     */
+    private fun startPanorama(
+        camera: CameraDevice,
+        active: CameraCaptureSession,
+        preview: Surface,
+        reader: ImageReader,
+    ) {
+        if (facing != CameraCharacteristics.LENS_FACING_BACK) {
+            listener.onError("A panorama needs a lens on the back of the phone")
+            return
+        }
+        if (!pose.canSenseMotion) {
+            listener.onError("This phone has no motion sensor to follow the sweep with")
+            return
+        }
+        val focal = focalInPixels(reader.width, reader.height)
+        if (focal == null) {
+            listener.onError("This lens does not say how wide it is")
+            return
+        }
+        pose.holdMotion(true)
+        if (pose.heading() == null) {
+            listener.onStatus("The motion sensor is still starting; try again")
+            return
+        }
+        val current = settings
+        val exposure = capabilities.exposureTimeRange?.clamp(current.exposureTimeNs)
+            ?: current.exposureTimeNs
+        val run = PanoramaRun(
+            context = appContext,
+            width = reader.width,
+            height = reader.height,
+            plan = PanoramaPlan(
+                baseName = PhotoStore.newBaseName(System.currentTimeMillis()),
+                turnDegrees = outputOrientation(),
+                pose = if (current.recordPose) pose.current() else Pose.NONE,
+                iso = capabilities.isoRange?.clamp(current.iso) ?: current.iso,
+                exposureNs = exposure,
+                focal = focal,
+                sensorOrientation = sensorOrientation,
+            ),
+            film = { film },
+            heading = pose::heading,
+            onProgress = listener::onSequence,
+            onStatus = listener::onStatus,
+            onSaved = { listener.onStatus("Saved $it") },
+            onProblem = listener::onError,
+        )
+        try {
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            builder.addTarget(preview)
+            builder.addTarget(reader.surface)
+            applySettings(builder)
+            // A stabiliser would fight the sweep, and shift each frame by an amount nobody reports.
+            builder.set(
+                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF,
+            )
+            panorama = run
+            mergingPanorama = run
+            capturing = true
+            active.setRepeatingRequest(builder.build(), runCallback, cameraHandler)
+            mergeHandler.post { run.publish() }
+            if (exposure > SWEEP_BLUR_NS) {
+                listener.onStatus("A shutter this long will smear as the camera turns")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Cannot start the panorama", e)
+            panorama = null
+            mergingPanorama = null
+            capturing = false
+            listener.onError("Cannot start: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /** Back to the preview, and stitch what was gathered. */
+    private fun endPanorama() {
+        val run = panorama ?: return
+        panorama = null
+        savingRun = run
+        listener.onCaptureBusy(true)
+        resumePreview()
+        mergeHandler.post {
+            mergingPanorama = null
+            listener.onSequence(null)
+            try {
+                run.finish()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Cannot finish the panorama", t)
+                listener.onError("Cannot save the panorama: ${t.javaClass.simpleName}")
+            }
+            whenWritten(run)
+        }
+    }
+
+    /**
+     * The focal length in pixels of a stream this size. The camera's own calibration if it has one,
+     * else its focal length in millimetres over the size of its sensor. Both are about the active
+     * array, which a stream is a centred crop of and then a scale.
+     */
+    private fun focalInPixels(width: Int, height: Int): Float? {
+        val chars = characteristics ?: return null
+        val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        val scale = maxOf(width.toFloat() / active.width(), height.toFloat() / active.height())
+        val calibrated = chars.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)?.firstOrNull()
+        if (calibrated != null && calibrated > 0f) return calibrated * scale
+        val millimetres = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            ?.firstOrNull() ?: return null
+        val sensor = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: return null
+        val pixels = chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE) ?: return null
+        if (sensor.width <= 0f) return null
+        return millimetres / sensor.width * pixels.width * scale
+    }
+
     private val runCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
@@ -1345,9 +1689,18 @@ class CameraController(context: Context, private val listener: Listener) {
             ?: return@OnImageAvailableListener
         try {
             val taking = mergingBracket
+            val stacking = mergingStack
+            val sweeping = mergingPanorama
             val run = mergingRun
             if (taking != null) {
                 endBracketIfDone(taking, taking.offer(image))
+            } else if (stacking != null) {
+                stacking.offer(image)
+                cameraHandler.post { advanceStack(stacking) }
+            } else if (sweeping != null) {
+                if (sweeping.offer(image)) {
+                    cameraHandler.post { if (panorama === sweeping) endPanorama() }
+                }
             } else if (run != null && run.offer(image)) {
                 cameraHandler.post { if (sequence === run) endRun() }
             }
@@ -1356,7 +1709,17 @@ class CameraController(context: Context, private val listener: Listener) {
             // still good, so a run out of memory ends and writes it.
             Log.e(TAG, "Dropped a frame from the run", t)
             val run = mergingRun
-            if (t is OutOfMemoryError) cameraHandler.post { if (sequence === run) endRun() }
+            val stacking = mergingStack
+            val sweeping = mergingPanorama
+            cameraHandler.post {
+                // A stack waits on every frame, so losing one must not leave it waiting.
+                if (stacking != null && stack === stacking) {
+                    if (t is OutOfMemoryError) endStack() else advanceStack(stacking)
+                }
+                // Storage that cannot take this frame will not take the next one either.
+                if (sweeping != null && panorama === sweeping) endPanorama()
+                if (t is OutOfMemoryError && sequence === run) endRun()
+            }
         } finally {
             runCatching { image.close() }
         }

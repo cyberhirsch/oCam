@@ -110,7 +110,7 @@ reason, including running out of memory on a large still, the photograph is writ
 rather than not at all.
 
 **Many frames, one picture.** The button beside the file format moves the shutter between
-`ONE`, `HDR`, `PAINT`, `LONG` and `TRAIL`. In the last three a press starts taking frames at the ISO,
+`ONE`, `HDR`, `STACK`, `PANO`, `PAINT`, `LONG` and `TRAIL`. In the last three a press starts taking frames at the ISO,
 shutter, focus and white balance already set, and the picture being built replaces the live
 frame while it happens.
 
@@ -140,6 +140,29 @@ and later it is an Ultra HDR file where the frames found light brighter than the
 screen with the range shows those parts brighter, and everything else sees an ordinary JPEG. That
 gain treats the camera's frames as sRGB, so it is an estimate of the light rather than a measurement,
 and it is not graded by the film simulation. `KEEP HDR FRAMES` also writes each exposure, ungraded.
+
+**Focus stack.** Set focus on the nearest thing and press in `STACK`. The lens steps from there to
+two, four or eight times as far, or to infinity, taking 5 to 25 frames evenly spaced in diopters, and
+waits to arrive at each one. A lens changes its field of view as it focuses, so each frame is lined
+up with the last, and through Laplacian pyramids each point then keeps the detail of the frame that
+was sharpest there. Frames are merged as they arrive and the next waits for that, so memory does not
+grow with their number and a stack takes seconds per frame. It wants a tripod and a subject that
+stays still: alignment removes what the lens does, not what the subject does. A press during the
+stack stops it and writes what it has.
+
+**Panorama.** Press in `PANO` and turn on the spot, sideways, with the phone held either way up. A
+frame is kept each time the camera has turned by four tenths of what a frame takes in, as the motion
+sensor reports it, and goes to the app's cache. A press stops the sweep, as does a full turn, and only
+then is it stitched, which takes a few seconds per frame: frames are laid on a cylinder, placed by the
+sensor and then lined up by comparing them, and joined along the seam where they differ least, so that
+something moving past appears once. Where a frame has too little in it to compare, such as clear sky,
+the sensor's word stands, and the app says how many joins that was. The picture is cropped to the
+largest rectangle every point of which was seen, so a steadier sweep keeps more of it.
+
+Exposure, focus and white balance stay as set, so set them for the brightest part you mean to keep. It
+turns one way only and does not close a full turn into a seamless loop, or carry the metadata for a
+360 viewer. It does not go up and down, and it needs a lens on the back. The picture is limited by the
+memory free when stitching starts, and is scaled down to fit rather than lost.
 
 **RAW.** The format button cycles JPEG → RAW → RAW+JPEG on lenses that support it. RAW is
 written as DNG built from the exact capture result that produced the frame, so the black
@@ -238,6 +261,11 @@ sequence/
   FrameMerger       the running maximum and average; no Android in it, and tested
   ExposureFusion    the HDR blend and its gain map; no Android in it, and tested
   BracketRun        one bracket: frames in, one picture or Ultra HDR file out
+  ImageAligner      lines two pictures up; no Android in it, and tested
+  FocusStack        sharp front to back, merged frame by frame; no Android in it, and tested
+  StackRun          one focus stack: frames in, one picture out
+  Panorama          the cylinder, the seams and the canvas; no Android in it, and tested
+  PanoramaRun       one sweep: frames to the cache as it turns, one picture out when it stops
   SequenceRun       one run: frames in, picture and video out, on the merge thread
   VideoWriter       the build-up video, through MediaCodec and MediaMuxer
 io/PhotoStore       JPEG, DNG and MP4 writing through MediaStore
