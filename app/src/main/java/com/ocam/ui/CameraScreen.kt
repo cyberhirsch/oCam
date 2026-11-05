@@ -2,6 +2,7 @@ package com.ocam.ui
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
@@ -60,6 +61,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocam.CameraUiState
 import com.ocam.CameraViewModel
 import com.ocam.camera.WhiteBalance
+import com.ocam.qr.QrReader
 import com.ocam.sequence.SequenceMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -77,6 +79,10 @@ private const val OVERLAY_INTERVAL_MS = 90L
 
 /** The long side of the copy peaking and false colour are drawn from. */
 private const val OVERLAY_SAMPLE_LONG_SIDE = 480
+
+/** How often, and how large, the preview is read back while looking for a QR code. */
+private const val QR_INTERVAL_MS = 300L
+private const val QR_SAMPLE_LONG_SIDE = 1280
 
 /** How far the magnifier enlarges the frame. */
 private const val MAGNIFICATION = 4f
@@ -113,6 +119,40 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
                 analyseFrame(bitmap, peaking, falseColor, transform)
             }
             bitmap.recycle()
+        }
+    }
+
+    // Large enough for a code some way off, and only while it is asked for and nothing else needs
+    // the frames: reading a preview back at this size is not free.
+    val scanning = state.qrScan && !state.reviewOpen && state.sequence == null
+    LaunchedEffect(scanning) {
+        if (!scanning) return@LaunchedEffect
+        var bitmap: Bitmap? = null
+        var pixels = IntArray(0)
+        try {
+            while (true) {
+                delay(QR_INTERVAL_MS)
+                val view = textureView?.takeIf { it.isAvailable && it.width > 0 && it.height > 0 }
+                    ?: continue
+                val scale = min(1f, QR_SAMPLE_LONG_SIDE.toFloat() / maxOf(view.width, view.height))
+                val width = (view.width * scale).roundToInt().coerceAtLeast(3)
+                val height = (view.height * scale).roundToInt().coerceAtLeast(3)
+                val reused = bitmap?.takeIf { it.width == width && it.height == height }
+                    ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+                        bitmap?.recycle()
+                        bitmap = it
+                    }
+                if (runCatching { view.getBitmap(reused) }.isFailure) continue
+                if (pixels.size != width * height) pixels = IntArray(width * height)
+                val found = pixels
+                val text = withContext(Dispatchers.Default) {
+                    reused.getPixels(found, 0, width, 0, 0, width, height)
+                    QrReader.read(found, width, height)
+                }
+                viewModel.onQrReading(text)
+            }
+        } finally {
+            bitmap?.recycle()
         }
     }
 
@@ -168,6 +208,14 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
         SettingsSheet(state = state, viewModel = viewModel, onClose = viewModel::closeSettings)
     }
 
+    if (state.reviewOpen) {
+        ReviewScreen(
+            shots = state.shots,
+            onDelete = viewModel::deleteShot,
+            onClose = viewModel::closeReview,
+        )
+    }
+
     state.diagnostics?.let { report ->
         DiagnosticsSheet(
             text = report,
@@ -187,7 +235,6 @@ private fun LandscapeControls(
     viewModel: CameraViewModel,
     frame: FrameStats,
 ) {
-    val context = LocalContext.current
     val caps = state.capabilities
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -269,10 +316,9 @@ private fun LandscapeControls(
             }
 
             Box(modifier = Modifier.width(strip).fillMaxHeight()) {
-                FlatButton(
-                    label = "FILES",
-                    active = false,
-                    onClick = { openPhotoFolder(context) },
+                ReviewButton(
+                    state = state,
+                    viewModel = viewModel,
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp),
                 )
                 ShutterButton(
@@ -336,8 +382,19 @@ private fun PreviewArea(
 
         val error = state.error
         val status = state.status
-        if (error != null || status != null) {
-            Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp)) {
+        Column(
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            state.qrCode?.let { code ->
+                QrCard(
+                    code = code,
+                    onMessage = viewModel::onStatus,
+                    onDismiss = viewModel::dismissQrCode,
+                )
+            }
+            if (error != null || status != null) {
                 Banner(
                     text = error ?: status.orEmpty(),
                     color = if (error != null) MaterialTheme.colorScheme.error else Color.White,
@@ -580,6 +637,11 @@ private fun FocusColumn(
             active = state.magnify,
             onClick = viewModel::toggleMagnify,
         )
+        FlatButton(
+            label = "QR",
+            active = state.qrScan,
+            onClick = viewModel::toggleQrScan,
+        )
     }
 }
 
@@ -723,15 +785,39 @@ private fun LensRow(state: CameraUiState, viewModel: CameraViewModel) {
     }
 }
 
+/**
+ * The last shot, which opens review. With nothing to show, the folder is still there: files from
+ * before a reinstall are in it, and this app can no longer see them by itself.
+ */
+@Composable
+private fun ReviewButton(state: CameraUiState, viewModel: CameraViewModel, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val newest = state.shots.firstOrNull()
+    if (newest != null) {
+        ReviewThumbnail(
+            shot = newest,
+            enabled = state.sequence == null,
+            onClick = viewModel::openReview,
+            modifier = modifier,
+        )
+    } else {
+        FlatButton(
+            label = "FILES",
+            active = false,
+            onClick = { openPhotoFolder(context) },
+            modifier = modifier,
+        )
+    }
+}
+
 @Composable
 private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel, frame: FrameStats) {
-    val context = LocalContext.current
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(modifier = Modifier.weight(1f)) {
-            FlatButton(label = "FILES", active = false, onClick = { openPhotoFolder(context) })
+            ReviewButton(state, viewModel)
         }
         ShutterButton(
             busy = state.busy || state.countdown != null,
@@ -792,7 +878,7 @@ private fun applyPreviewTransform(
  * Open the folder the photos went into. The documents provider knows it by path; where no file
  * browser answers that, fall back to whatever handles images.
  */
-private fun openPhotoFolder(context: Context) {
+internal fun openPhotoFolder(context: Context) {
     val folder = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(
             DocumentsContract.buildDocumentUri(

@@ -1,8 +1,12 @@
 package com.ocam
 
 import android.app.Application
+import android.database.ContentObserver
 import android.graphics.SurfaceTexture
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.hardware.camera2.CameraManager
 import android.util.Size
 import androidx.lifecycle.AndroidViewModel
@@ -25,6 +29,9 @@ import com.ocam.sequence.SequenceMode
 import com.ocam.sequence.SequenceOptions
 import com.ocam.sequence.SequenceProgress
 import com.ocam.camera.WhiteBalance
+import com.ocam.io.PhotoLibrary
+import com.ocam.io.ReviewShot
+import com.ocam.qr.QrTracker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -90,6 +97,12 @@ data class CameraUiState(
     val sequenceOptions: SequenceOptions = SequenceOptions(),
     /** The run in progress, while there is one. */
     val sequence: SequenceProgress? = null,
+    /** The shots in the album this app can see, newest first, and whether they are on screen. */
+    val shots: List<ReviewShot> = emptyList(),
+    val reviewOpen: Boolean = false,
+    /** Whether the frame is being searched for QR codes, and the code it found, until dismissed. */
+    val qrScan: Boolean = false,
+    val qrCode: String? = null,
 ) {
     /** What the shutter can be set to here: what is allowed, filtered by what this lens can do. */
     val formatChoices: List<CaptureFormat>
@@ -133,6 +146,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     private var film: LutPipeline? = null
     private var filmTexture: SurfaceTexture? = null
 
+    private var shotsJob: Job? = null
+    private val qrTracker = QrTracker()
+
+    /**
+     * Every way a file gets written lands here, and so do files deleted from another app, without
+     * the camera having to know anyone is looking.
+     */
+    private val albumObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) = refreshShots()
+    }
+
     init {
         // Before touching a camera: if a lens was mid-open when the app last went away, that is
         // the one that took it down. Some firmware needs a reboot after this, so it must not be
@@ -163,6 +187,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
                 ),
             )
         }
+
+        application.contentResolver.registerContentObserver(PhotoLibrary.collection, true, albumObserver)
+        refreshShots()
 
         viewModelScope.launch {
             // Enumerating lenses touches every camera's characteristics; keep it off the main thread.
@@ -203,6 +230,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         resumed = true
         // Position and heading are listened to only while the camera is on screen.
         if (_state.value.settings.recordPose) controller.pose.start()
+        refreshShots()
         openIfReady()
     }
 
@@ -220,6 +248,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onCleared() {
         super.onCleared()
+        getApplication<Application>().contentResolver.unregisterContentObserver(albumObserver)
         releaseFilm()
         controller.release()
     }
@@ -539,6 +568,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
      */
     fun shutter() {
         val state = _state.value
+        // As on any camera: whatever is being looked at, the shutter means back to shooting.
+        if (state.reviewOpen) {
+            closeReview()
+            return
+        }
         if (state.sequence != null) {
             controller.stopSequence()
             return
@@ -602,6 +636,52 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     override fun onSequence(progress: SequenceProgress?) {
         _state.update { it.copy(sequence = progress) }
     }
+
+    /** A file arrives in several steps, so this waits for them to finish before looking. */
+    private fun refreshShots() {
+        shotsJob?.cancel()
+        shotsJob = viewModelScope.launch {
+            delay(250)
+            val application = getApplication<Application>()
+            val shots = withContext(Dispatchers.IO) { PhotoLibrary.shots(application) }
+            _state.update {
+                it.copy(shots = shots, reviewOpen = it.reviewOpen && shots.isNotEmpty())
+            }
+        }
+    }
+
+    fun openReview() {
+        if (_state.value.shots.isNotEmpty()) _state.update { it.copy(reviewOpen = true) }
+    }
+
+    fun closeReview() = _state.update { it.copy(reviewOpen = false) }
+
+    fun deleteShot(shot: ReviewShot) {
+        viewModelScope.launch {
+            val application = getApplication<Application>()
+            val gone = withContext(Dispatchers.IO) { PhotoLibrary.delete(application, shot) }
+            if (gone < shot.rows.size) onStatus("Could not delete all of ${shot.baseName}")
+            refreshShots()
+        }
+    }
+
+    /** Focus is manual here, so turning this on takes one look at whatever is in the middle. */
+    fun toggleQrScan() {
+        val on = !_state.value.qrScan
+        qrTracker.reset()
+        _state.update { it.copy(qrScan = on, qrCode = null) }
+        if (on) {
+            controller.rackFocusAt(0.5f, 0.5f)
+            onStatus("Point at a QR code. Tap it if it stays soft")
+        }
+    }
+
+    fun onQrReading(text: String?) {
+        val news = qrTracker.offer(text, SystemClock.uptimeMillis()) ?: return
+        _state.update { it.copy(qrCode = news) }
+    }
+
+    fun dismissQrCode() = _state.update { it.copy(qrCode = null) }
 
     private fun cancelTimer() {
         timerJob?.cancel()

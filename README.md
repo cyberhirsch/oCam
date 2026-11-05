@@ -164,6 +164,22 @@ turns one way only and does not close a full turn into a seamless loop, or carry
 360 viewer. It does not go up and down, and it needs a lens on the back. The picture is limited by the
 memory free when stitching starts, and is scaled down to fit rather than lost.
 
+**Review.** The newest shot sits beside the shutter; a tap opens it, and a swipe goes to older ones.
+Pinch or double tap enlarges, up to the 4096 pixels on the long side that a picture is loaded at, so
+a 50 megapixel still stops short of its last pixel. Each shot shows its histogram, ISO, shutter and
+aperture, from the file. RAW+JPEG counts as one shot and is deleted together, and `SHARE` sends the
+JPEG. `DELETE` takes a second press and is final: there is no bin. Any shutter press goes back to
+shooting. Android shows an app its own files without a permission, so none is asked for, and for the
+same reason files from before a reinstall do not appear: `FILES` still opens the folder.
+
+**QR codes.** `QR` on the focus column looks for a code in the preview, three times a second, on the
+phone and with no network. It racks focus to the middle once as it turns on, and focus does not follow
+after that, so tap a code that stays soft. The whole of what a code says is shown first and nothing
+happens until a button is pressed. `OPEN` is offered for web links, email, phone numbers, SMS and map
+positions, and everything else, like `intent:` or a WiFi code, can only be copied. A dark exposure or
+a film simulation with little contrast makes a code harder to read, because the code is read from the
+same picture you see.
+
 **RAW.** The format button cycles JPEG → RAW → RAW+JPEG on lenses that support it. RAW is
 written as DNG built from the exact capture result that produced the frame, so the black
 level, colour matrices, noise profile and lens shading in the file match the shot. Files
@@ -266,6 +282,11 @@ sequence/
   StackRun          one focus stack: frames in, one picture out
   Panorama          the cylinder, the seams and the canvas; no Android in it, and tested
   PanoramaRun       one sweep: frames to the cache as it turns, one picture out when it stops
+io/
+  PhotoShots        files into shots; no Android in it, and tested
+  PhotoLibrary      reads back and deletes what PhotoStore wrote
+qr/
+  Qr                reads a code, says what may be done with it; no Android in it, and tested
   SequenceRun       one run: frames in, picture and video out, on the merge thread
   VideoWriter       the build-up video, through MediaCodec and MediaMuxer
 io/PhotoStore       JPEG, DNG and MP4 writing through MediaStore

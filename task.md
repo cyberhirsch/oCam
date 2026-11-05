@@ -7,8 +7,8 @@
 | 1 | Done, not yet tested on a phone (`5b9a1b1`) | Shooting aids | Fast results, no new engine needed | 1 week |
 | 2 | Done, not yet tested on a phone (`7ebf549`) | Engine + light painting, long exposure, star trails | No alignment needed on a tripod, and the most impressive result | 2–3 weeks |
 | 3 | Done, not yet tested on a phone (`f5ee5bd`) | Bracketing → HDR fusion → Ultra HDR | Reuses the engine | 1–2 weeks |
-| 4 | Written, unit tested, not yet tested on a phone | Focus stacking | Manual focus is already native | 1 week |
-| 5 | Written, unit tested, not yet tested on a phone | Panorama | Biggest single feature; motion-sensor seeding cuts the work | 3–4 weeks |
+| 4 | Done, not yet tested on a phone (`5b309bd`) | Focus stacking | Manual focus is already native | 1 week |
+| 5 | Done, not yet tested on a phone (`5b309bd`) | Panorama | Biggest single feature; motion-sensor seeding cuts the work | 3–4 weeks |
 | 6 | Open | Align and merge: night mode, super-resolution | The hardest maths; benefits from everything above | 4+ weeks |
 | 7 | Open | Own RAW development | The end goal | Open-ended |
 
@@ -50,3 +50,16 @@
   guide on screen (only a slow down note), multi-band blending, per-frame brightness matching (an
   exposure is fixed for a sweep, but a camera's own tone curve may still vary).
 - A film simulation on a very large panorama may not fit in memory, in which case it is saved ungraded.
+
+## Outside the roadmap: review and QR codes
+
+Written, unit tested, not yet tested on a phone.
+
+- Test review on a phone: that the thumbnail updates after each kind of shot, swiping against pinching,
+  double tap, a DNG with no JPEG, a very wide panorama, sharing, deleting RAW+JPEG, memory with neighbours
+  loaded, and how Ultra HDR looks (it is shown as plain SDR here).
+- Test QR on a phone: reading distance, how much the read-back slows the preview, with a film simulation
+  on, in landscape where the sample may be stretched, and the front camera.
+- Not built: 100% zoom on stills past 4096 pixels, a bin for deleted shots, shots from before a reinstall,
+  joining a WiFi network, barcodes other than QR, marking the code on the preview, making a QR code for a
+  photo.
