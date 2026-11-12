@@ -10,9 +10,24 @@ val baseVersion = "1.0"
 val buildNumber = (System.getenv("BUILD_NUMBER") ?: "0").toIntOrNull() ?: 0
 val buildCommit = System.getenv("BUILD_COMMIT")?.take(7)
 
+// CI restores the one key every published build must share, or Android refuses each new build as
+// an update. Without it, as on a developer's machine, a debug build uses the local debug key.
+val stableKeystore = System.getenv("OCAM_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "com.ocam"
     compileSdk = 35
+
+    signingConfigs {
+        if (stableKeystore != null) {
+            create("stable") {
+                storeFile = file(stableKeystore)
+                storePassword = System.getenv("OCAM_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("OCAM_KEY_ALIAS")
+                keyPassword = System.getenv("OCAM_KEYSTORE_PASSWORD")
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.ocam"
@@ -28,6 +43,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            if (stableKeystore != null) signingConfig = signingConfigs.getByName("stable")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

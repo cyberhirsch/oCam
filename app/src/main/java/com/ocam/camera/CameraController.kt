@@ -378,6 +378,14 @@ class CameraController(context: Context, private val listener: Listener) {
         }
     }
 
+    /**
+     * Runs [action] once everything already handed to the writing threads is in the files. A lens
+     * that closed in the middle of a merge has forgotten about it, so the busy flag cannot say so.
+     */
+    fun afterPendingWrites(action: () -> Unit) {
+        mergeHandler.post { ioHandler.post(action) }
+    }
+
     fun release() {
         cameraHandler.post {
             closeInternal()

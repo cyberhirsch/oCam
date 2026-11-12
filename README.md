@@ -246,7 +246,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 CI builds the APK on every push and attaches it to a rolling `debug-latest`
 prerelease, so the newest build is always at:
 
-https://github.com/cyberhirsch/oCam/releases/download/debug-latest/app-debug.apk
+https://github.com/cyberhirsch/oCam/releases/download/debug-latest/oCam-debug.apk
 
 Open that on the phone and it downloads the APK directly - the repository is
 public, so no login is involved. Allow "install unknown apps" for the browser
@@ -262,6 +262,44 @@ the round trip through GitHub - run this on any machine the phone can reach:
 It uses a local build if there is one, otherwise downloads the release with `gh`,
 prints a QR code pointing at that machine's LAN address, and serves the file
 until you stop it.
+
+### Updating from inside the app
+
+On launch, at most once a day, and from CHECK at the bottom of settings, the app
+reads the public GitHub API for the `debug-latest` release and compares it with
+its own `versionCode`. Newer builds are offered on the camera screen. Nothing is
+downloaded until UPDATE is tapped, and nothing is installed until INSTALL is.
+INSTALL waits for a shot, a run, a merge or a timer to end. Installing closes the
+app and does not reopen it.
+
+The download must be the same package, signed with the same certificate, and
+newer than what is installed. Anything else is thrown away with the reason shown.
+
+**The signing key.** A CI runner makes a new debug key each time, so builds 35, 36
+and 37 carry three different certificates, and Android refuses an update signed
+with a different key. `tools/make-signing-key.sh` makes one key and stores it as
+the repository secrets `OCAM_KEYSTORE_BASE64`, `OCAM_KEYSTORE_PASSWORD` and
+`OCAM_KEY_ALIAS`. Keep the keystore and password file it writes, outside the
+repository. Without the secrets CI warns and carries on with a throwaway key.
+
+**Moving to the key once.** A phone on an older build has to uninstall oCam once
+and install a build signed with the new key. Uninstalling clears the app's
+settings and the film simulations in its folder. Photographs stay.
+
+**What Android allows:**
+
+- The first install asks the owner to allow "Install unknown apps" for oCam.
+- Android 10 and 11 always ask the owner to confirm an install.
+- From Android 12, `setRequireUserAction(USER_ACTION_NOT_REQUIRED)` removes that
+  confirmation when the app updates itself, holds `REQUEST_INSTALL_PACKAGES`,
+  declares `UPDATE_PACKAGES_WITHOUT_USER_ACTION`, and the new build meets a target
+  SDK floor that rises with each Android version (API 34 is needed on Android 16,
+  API 35 on the version after it). oCam targets 35, so it will have to keep up.
+- Google Play Protect is separate from all of that. On a test device with Play
+  services (Android 16 emulator) it stopped both updates tried with "App scan
+  recommended", whose choices are to send the APK to Google or, under More details,
+  "Install without scanning". With Android's package verifier switched off there was
+  no prompt at all.
 
 ## How it fits together
 

@@ -33,6 +33,16 @@ import com.ocam.camera.WhiteBalance
 import com.ocam.io.PhotoLibrary
 import com.ocam.io.ReviewShot
 import com.ocam.qr.QrTracker
+import com.ocam.update.InstallResult
+import com.ocam.update.SelfUpdater
+import com.ocam.update.UpdateInstallReceiver
+import com.ocam.update.UpdateState
+import com.ocam.update.Verdict
+import com.ocam.update.automaticCheckWanted
+import com.ocam.update.checkDue
+import com.ocam.update.safeToInstall
+import org.json.JSONException
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -47,6 +57,8 @@ import kotlin.math.roundToInt
 const val MIN_KELVIN = 2000
 const val MAX_KELVIN = 10000
 private const val KELVIN_SPAN = 6000f
+/** How long an install may stay unanswered before it is offered again. */
+private const val INSTALL_PATIENCE_MILLIS = 120_000L
 
 data class CameraUiState(
     val lenses: List<Lens> = emptyList(),
@@ -104,7 +116,14 @@ data class CameraUiState(
     /** Whether the frame is being searched for QR codes, and the code it found, until dismissed. */
     val qrScan: Boolean = false,
     val qrCode: String? = null,
+    /** How far an update has got, and whether the owner has waved it off the camera screen. */
+    val update: UpdateState = UpdateState.Idle,
+    val updateDismissed: Boolean = false,
 ) {
+    /** Installing replaces the process, so nothing that is still being made may be running. */
+    val safeToInstall: Boolean
+        get() = safeToInstall(busy, sequence != null, countdown != null)
+
     /** What the shutter can be set to here: what is allowed, filtered by what this lens can do. */
     val formatChoices: List<CaptureFormat>
         get() = formatChoices(saveJpeg, saveHeic, saveRaw, capabilities)
@@ -157,6 +176,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
     private val albumObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) = refreshShots()
     }
+    private val updater = SelfUpdater(application)
+    /** The check or the download in progress. */
+    private var updateJob: Job? = null
 
     init {
         // Before touching a camera: if a lens was mid-open when the app last went away, that is
@@ -212,7 +234,142 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
             }
             openIfReady()
         }
+
+        viewModelScope.launch { UpdateInstallReceiver.results.collect(::onInstallResult) }
+        viewModelScope.launch(Dispatchers.IO) { updater.clearDownloads() }
+        val installed = updater.installedVersionCode
+        if (automaticCheckWanted(installed) && checkDue(System.currentTimeMillis(), appSettings.lastUpdateCheck)) {
+            runUpdateCheck(quiet = true)
+        }
     }
+
+    // region updates
+
+    /** The button in settings. */
+    fun checkForUpdate() {
+        when (_state.value.update) {
+            UpdateState.Idle, UpdateState.UpToDate, is UpdateState.Failed -> Unit
+            else -> return
+        }
+        _state.update { it.copy(update = UpdateState.Checking, updateDismissed = false) }
+        runUpdateCheck(quiet = false)
+    }
+
+    /** A quiet check is the one at launch: it may offer an update but never complains. */
+    private fun runUpdateCheck(quiet: Boolean) {
+        updateJob = viewModelScope.launch {
+            val next = try {
+                val offer = withContext(Dispatchers.IO) { updater.fetchOffer() }
+                appSettings.lastUpdateCheck = System.currentTimeMillis()
+                if (offer != null) UpdateState.Available(offer) else UpdateState.UpToDate
+            } catch (e: IOException) {
+                if (quiet) UpdateState.Idle else UpdateState.Failed(e.message ?: "Cannot reach GitHub")
+            } catch (e: JSONException) {
+                if (quiet) UpdateState.Idle else UpdateState.Failed("GitHub's answer could not be read")
+            }
+            _state.update { it.copy(update = next) }
+        }
+    }
+
+    /** Only ever from a button. Shooting carries on meanwhile. */
+    fun downloadUpdate() {
+        val offer = (_state.value.update as? UpdateState.Available)?.offer ?: return
+        _state.update { it.copy(update = UpdateState.Downloading(offer, 0), updateDismissed = false) }
+        updateJob = viewModelScope.launch {
+            val next = try {
+                withContext(Dispatchers.IO) {
+                    val file = updater.download(offer) { percent ->
+                        _state.update { current ->
+                            // A late report must not undo a cancel.
+                            if (current.update is UpdateState.Downloading) {
+                                current.copy(update = UpdateState.Downloading(offer, percent))
+                            } else {
+                                current
+                            }
+                        }
+                    }
+                    val verdict = updater.verify(file)
+                    if (verdict == Verdict.OK) {
+                        UpdateState.Ready(offer, file)
+                    } else {
+                        updater.clearDownloads()
+                        UpdateState.Failed(verdict.message)
+                    }
+                }
+            } catch (e: IOException) {
+                updater.clearDownloads()
+                // What the connection says at this point means nothing to a photographer.
+                android.util.Log.w("oCamUpdate", "Download failed", e)
+                UpdateState.Failed("The download broke off. Nothing was installed. Try again.")
+            }
+            _state.update { it.copy(update = next) }
+        }
+    }
+
+    fun cancelUpdateDownload() {
+        val offer = (_state.value.update as? UpdateState.Downloading)?.offer ?: return
+        updateJob?.cancel()
+        _state.update { it.copy(update = UpdateState.Available(offer)) }
+        viewModelScope.launch(Dispatchers.IO) { updater.clearDownloads() }
+    }
+
+    fun dismissUpdate() {
+        _state.update { current ->
+            current.copy(
+                updateDismissed = current.update !is UpdateState.Failed,
+                update = if (current.update is UpdateState.Failed) UpdateState.Idle else current.update,
+            )
+        }
+    }
+
+    /**
+     * From the INSTALL button only. From here the shutter stays shut, and anything a closed lens
+     * left behind on the writing threads gets to finish, because the system may stop this process
+     * the moment the session is committed.
+     */
+    fun installUpdate() {
+        val state = _state.value
+        val ready = state.update as? UpdateState.Ready ?: return
+        if (!state.safeToInstall) return
+        if (!updater.canInstall()) {
+            updater.openInstallPermission()
+            return
+        }
+        _state.update { it.copy(update = UpdateState.Installing(ready)) }
+        controller.afterPendingWrites {
+            viewModelScope.launch {
+                try {
+                    withContext(Dispatchers.IO) { updater.install(ready.file) }
+                } catch (e: IOException) {
+                    _state.update { it.copy(update = UpdateState.Failed(e.message ?: "The install failed")) }
+                    return@launch
+                }
+                // Nothing may come back if a phone drops the prompt, and a shutter that stayed
+                // shut for that would be far worse than offering the install again.
+                delay(INSTALL_PATIENCE_MILLIS)
+                _state.update { current ->
+                    if (current.update is UpdateState.Installing) current.copy(update = ready) else current
+                }
+            }
+        }
+    }
+
+    private fun onInstallResult(result: InstallResult) {
+        _state.update { current ->
+            val installing = current.update as? UpdateState.Installing ?: return@update current
+            current.copy(
+                update = when (result) {
+                    // Normally this process is gone before it hears, so this is the phone that
+                    // did not stop it.
+                    InstallResult.Installed -> UpdateState.Failed("Installed. Close oCam and open it again.")
+                    InstallResult.Cancelled -> installing.ready
+                    is InstallResult.Refused -> UpdateState.Failed(result.message)
+                },
+            )
+        }
+    }
+
+    // endregion
 
     // region lifecycle plumbing
 
@@ -583,7 +740,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
             onStatus("Timer cancelled")
             return
         }
-        if (state.busy) return
+        if (state.busy || state.update is UpdateState.Installing) return
         val seconds = state.aids.timer.seconds
         if (seconds <= 0) {
             release()

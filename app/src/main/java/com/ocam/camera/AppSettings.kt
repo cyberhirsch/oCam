@@ -106,6 +106,11 @@ class AppSettings(context: Context) {
             .putInt(KEY_LAPSE_BLUR, value.lapseBlur)
             .apply()
 
+    /** When GitHub last answered the launch check, or null if it never has. */
+    var lastUpdateCheck: Long?
+        get() = prefs.getLong(KEY_LAST_UPDATE_CHECK, -1L).takeIf { it >= 0 }
+        set(value) = prefs.edit().putLong(KEY_LAST_UPDATE_CHECK, value ?: -1L).apply()
+
     /** A stored name from an older build may no longer exist; the default stands in for it. */
     private inline fun <reified T : Enum<T>> enumOr(name: String?, fallback: T): T =
         enumValues<T>().firstOrNull { it.name == name } ?: fallback
@@ -165,6 +170,7 @@ class AppSettings(context: Context) {
         const val KEY_ULTRA_HDR = "hdr_ultra"
         const val KEY_STACK_FRAMES = "stack_frames"
         const val KEY_STACK_REACH = "stack_reach"
+        const val KEY_LAST_UPDATE_CHECK = "last_update_check"
     }
 }
 

@@ -36,7 +36,23 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # A runner makes itself a new debug key every time, and Android refuses an update signed
+      # with a different key. Every published build has to carry this one instead.
+      - name: Restore the signing key
+        env:
+          OCAM_KEYSTORE_BASE64: ${{ secrets.OCAM_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$OCAM_KEYSTORE_BASE64" ]; then
+            echo "::warning::OCAM_KEYSTORE_BASE64 is not set. This build gets a throwaway key and cannot update an installed oCam."
+            exit 0
+          fi
+          printf '%s' "$OCAM_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/ocam.keystore"
+          echo "OCAM_KEYSTORE_PATH=$RUNNER_TEMP/ocam.keystore" >> "$GITHUB_ENV"
+
       - name: Build debug APK
+        env:
+          OCAM_KEYSTORE_PASSWORD: ${{ secrets.OCAM_KEYSTORE_PASSWORD }}
+          OCAM_KEY_ALIAS: ${{ secrets.OCAM_KEY_ALIAS }}
         run: ./gradlew assembleDebug --stacktrace
 
       - name: Name the APK

@@ -1,5 +1,17 @@
 # Tasks
 
+## Updating from GitHub: still open
+
+- Make the signing key (`tools/make-signing-key.sh`), then move the phone to it. That one move needs
+  an uninstall, which clears the app's settings and the film simulations in its own folder. Until
+  the key is in place every CI build still has its own key and no update can be installed.
+- Test on a phone: an update end to end over real GitHub with the stable key, whether Play Protect
+  asks on every update there as it did on the emulator, and how this phone's maker treats an app
+  updating itself.
+- Test with a real run: INSTALL held back during a run, a merge and a timer. The rule is unit tested
+  and the shutter guard is written, but neither was driven on a device.
+- Not built: resuming a broken download, reopening the app after an update, a background check.
+
 ## Recommended order
 
 | # | Status | Step | Why first | Rough effort |

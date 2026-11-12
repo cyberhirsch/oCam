@@ -280,6 +280,7 @@ private fun PreviewArea(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            UpdateStrip(state, viewModel)
             state.qrCode?.let { code ->
                 QrCard(
                     code = code,
