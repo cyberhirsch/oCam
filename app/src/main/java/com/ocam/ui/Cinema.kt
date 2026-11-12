@@ -187,15 +187,13 @@ fun ValueBar(
         }
         if (!wide) {
             Box(modifier = Modifier.fillMaxWidth()) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable(onClick = viewModel::openSettings)
-                        .semantics { contentDescription = "Settings" },
-                    contentAlignment = Alignment.Center,
-                ) { LineIcon(ICON_SETTINGS, Color.White) }
+                // Spelled out: a bare gear here was too easy to miss.
+                Pill(
+                    text = "SETTINGS",
+                    selected = state.settingsOpen,
+                    modifier = Modifier.align(Alignment.CenterStart),
+                    onClick = viewModel::openSettings,
+                )
                 Counter(state, viewModel, Modifier.align(Alignment.Center))
                 FormatBadge(state, viewModel, Modifier.align(Alignment.CenterEnd))
             }
