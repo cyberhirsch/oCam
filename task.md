@@ -51,6 +51,46 @@
   exposure is fixed for a sweep, but a camera's own tone curve may still vary).
 - A film simulation on a very large panorama may not fit in memory, in which case it is saved ungraded.
 
+## Outside the roadmap: timelapse with motion blur
+
+Not built. A new mode, LAPSE: one picture every interval, written as a video at the end. Each picture
+is a LONG exposure in its own right, so it carries the blur a real long shutter would give.
+
+- Blur target: half of each interval (2 s interval, 1 s of light), the timelapse equivalent of a 180°
+  shutter. Interval and blur length are settings; the interval is a good use for the volume keys.
+- Chosen by the meter, per picture:
+  - Dark: one exposure, up to the longest the lens reports (often only 0.5–1 s for an app like this).
+  - Dim: several frames each close to 360° (exposure near the frame duration), averaged.
+  - Bright: many short frames averaged over the blur length. Slow things (clouds, crowds, shadows) blur
+    smoothly; fast ones (cars, birds) come out as a row of faint copies, because a phone cannot get a
+    long exposure in sun without a real ND.
+- Average as the frames arrive, as LONG does already; never record and keep a video to average later.
+- Expose each frame so nothing clips: averaging cannot bring back a highlight clipped in every frame.
+- Change between the three ways smoothly, or the video steps in brightness and blur at dusk.
+- To check on a phone: battery and heat over an hour with the camera running all the time, whether
+  exposure can reach the frame duration on this sensor, flicker under mains lights.
+
+### Later: optical flow to fill the gaps in bright light
+
+Between two short frames, find where each pixel moved (dense optical flow) and smear it along that
+path, or warp in-between frames, before averaging. Fills the gaps so fast movers blur like a true
+360° shutter.
+
+- Fails at the edges of things passing in front of others (halos, tearing), on sky, glass, smoke and
+  reflections, on anything moving more than about a tenth of the frame between samples, and on
+  flickering lights.
+- Cost: flow at about 480 px (DIS flow, a few ms a pair on a phone CPU), scaled up, blur applied at full
+  size. Or fewer samples a second (4–8) with flow filling wider gaps, at more risk of artefacts.
+- [ImageAligner.kt](app/src/main/java/com/ocam/sequence/ImageAligner.kt) finds one shift per frame
+  only; per-pixel flow is new code, and on the GPU it needs OpenGL or Vulkan compute.
+- Ship plain averaging first, then add this as a "smooth motion" option if the copies show on real
+  footage.
+
+### Related: LONG as a fake ND
+
+- Set the shutter close to the frame duration by itself, so frames join up without gaps.
+- Warn when frames clip.
+
 ## Outside the roadmap: review and QR codes
 
 Written, unit tested, not yet tested on a phone.
