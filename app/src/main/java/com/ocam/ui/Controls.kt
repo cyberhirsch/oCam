@@ -81,49 +81,6 @@ fun ThinSlider(
     }
 }
 
-/**
- * The same slider stood on end, for the controls that live along the edge of the frame rather
- * than under it. Top is infinity, bottom is as close as the lens focuses.
- */
-@Composable
-fun VerticalThinSlider(
-    progress: Float,
-    enabled: Boolean,
-    onProgress: (Float) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val clamped = progress.coerceIn(0f, 1f)
-    Box(
-        modifier = modifier
-            .width(26.dp)
-            .pointerInput(enabled) {
-                if (!enabled) return@pointerInput
-                detectTapGestures { offset ->
-                    onProgress((offset.y / size.height.toFloat()).coerceIn(0f, 1f))
-                }
-            }
-            .pointerInput(enabled) {
-                if (!enabled) return@pointerInput
-                detectVerticalDragGestures { change, _ ->
-                    change.consume()
-                    onProgress((change.position.y / size.height.toFloat()).coerceIn(0f, 1f))
-                }
-            }
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val centerX = size.width / 2f
-            val track = 2.dp.toPx()
-            val y = clamped * size.height
-            val rail = Color.White.copy(alpha = if (enabled) 0.20f else 0.08f)
-            val ink = if (enabled) Color.White else Color.White.copy(alpha = 0.15f)
-
-            drawLine(rail, Offset(centerX, 0f), Offset(centerX, size.height), track, StrokeCap.Round)
-            drawLine(ink, Offset(centerX, 0f), Offset(centerX, y), track, StrokeCap.Round)
-            drawCircle(ink, 7.dp.toPx(), Offset(centerX, y))
-        }
-    }
-}
-
 /** Small flat rectangle. Filled means "this is the state you are in". */
 @Composable
 fun FlatButton(
@@ -153,92 +110,6 @@ fun FlatButton(
             .background(background)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 5.dp),
-    )
-}
-
-/**
- * The same control stood on end, for the panel beside the frame when the phone is on its side.
- * Slider down the middle, name and value at the foot.
- */
-@Composable
-fun VerticalControl(
-    label: String,
-    value: String,
-    progress: Float,
-    available: Boolean,
-    onProgress: (Float) -> Unit,
-    sliderHeight: Dp,
-) {
-    Column(
-        modifier = Modifier.semantics { contentDescription = "$label $value" },
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        VerticalThinSlider(
-            progress = progress,
-            enabled = available,
-            onProgress = onProgress,
-            modifier = Modifier.height(sliderHeight),
-        )
-        Text(text = label, color = Color(0x73FFFFFF), fontSize = 9.sp)
-        Text(
-            text = value,
-            color = if (available) Color.White else Color(0xA6FFFFFF),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-        )
-    }
-}
-
-/**
- * One camera parameter on one line: name, slider, and the value it currently has. There is no
- * mode to choose - the slider is the setting.
- */
-@Composable
-fun ControlRow(
-    label: String,
-    value: String,
-    progress: Float,
-    available: Boolean,
-    onProgress: (Float) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .semantics { contentDescription = "$label $value" },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RowLabel(label)
-        ThinSlider(
-            progress = progress,
-            enabled = available,
-            onProgress = onProgress,
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-        )
-        RowValue(value, highlighted = available)
-    }
-}
-
-@Composable
-fun RowLabel(label: String) {
-    Text(
-        text = label,
-        color = Color(0x73FFFFFF),
-        fontSize = 9.sp,
-        fontWeight = FontWeight.Medium,
-        modifier = Modifier.width(38.dp),
-    )
-}
-
-@Composable
-fun RowValue(value: String, highlighted: Boolean) {
-    Text(
-        text = value,
-        color = if (highlighted) Color.White else Color(0xA6FFFFFF),
-        fontSize = 12.sp,
-        fontWeight = FontWeight.Medium,
-        textAlign = TextAlign.End,
-        modifier = Modifier.width(62.dp),
     )
 }
 
@@ -278,55 +149,6 @@ fun Pill(
         )
         if (subtitle != null) {
             Text(text = subtitle, color = foreground.copy(alpha = 0.7f), fontSize = 9.sp)
-        }
-    }
-}
-
-/** A ring, not a disc: the frame stays visible through the middle of the control. */
-@Composable
-fun ShutterButton(
-    busy: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    /** A run of frames is going: the next press ends it, and the button says so. */
-    running: Boolean = false,
-) {
-    Box(
-        modifier = modifier
-            .size(64.dp)
-            .clip(CircleShape)
-            .clickable(enabled = enabled && !busy, onClick = onClick)
-            .semantics { contentDescription = "Shutter" },
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val stroke = 3.5.dp.toPx()
-            val colour = when {
-                !enabled -> Color.White.copy(alpha = 0.3f)
-                busy -> Color.White.copy(alpha = 0.45f)
-                else -> Color.White
-            }
-            drawCircle(
-                color = colour,
-                radius = (size.minDimension - stroke) / 2f,
-                style = Stroke(stroke),
-            )
-            if (running) {
-                val side = size.minDimension * 0.34f
-                drawRect(
-                    color = Color(0xFFE5484D),
-                    topLeft = Offset((size.width - side) / 2f, (size.height - side) / 2f),
-                    size = Size(side, side),
-                )
-            }
-        }
-        if (busy) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(26.dp),
-                color = Color.White,
-                strokeWidth = 2.dp,
-            )
         }
     }
 }

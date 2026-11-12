@@ -43,6 +43,9 @@ import com.ocam.camera.Lens
 import com.ocam.camera.SelfTimer
 import com.ocam.sequence.HDR_FRAMES
 import com.ocam.sequence.HDR_SPREADS
+import com.ocam.sequence.LAPSE_BLURS
+import com.ocam.sequence.LAPSE_SECONDS
+import com.ocam.camera.VolumeKeys
 import com.ocam.sequence.LONG_EXPOSURE_SECONDS
 import com.ocam.sequence.STACK_FRAMES
 import com.ocam.sequence.STACK_REACHES
@@ -145,9 +148,9 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 modifier = Modifier.padding(top = 22.dp, bottom = 4.dp),
             )
             Text(
-                text = "The button beside the file format moves the shutter between ONE, HDR, STACK, " +
-                    "PANO, PAINT, LONG and TRAIL. These write a JPEG made from the camera's own " +
-                    "frames of up to 13 megapixels, at the ISO and shutter set.",
+                text = "The bar of modes moves the shutter between ONE, HDR, STACK, PANO, PAINT, " +
+                    "LONG, TRAIL and LAPSE. These write a JPEG made from the camera's own frames " +
+                    "of up to 13 megapixels, at the ISO and shutter set; LAPSE writes an MP4.",
                 color = Color(0x88FFFFFF),
                 fontSize = 11.sp,
                 modifier = Modifier.padding(bottom = 4.dp),
@@ -216,6 +219,20 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 selected = sequence.stackReach,
                 onSelect = { reach -> viewModel.updateSequenceOptions { it.copy(stackReach = reach) } },
             )
+            ChoiceRow(
+                name = "LAPSE INTERVAL",
+                options = LAPSE_SECONDS,
+                label = { "${it}s" },
+                selected = sequence.lapseSeconds,
+                onSelect = { seconds -> viewModel.updateSequenceOptions { it.copy(lapseSeconds = seconds) } },
+            )
+            ChoiceRow(
+                name = "LAPSE BLUR",
+                options = LAPSE_BLURS,
+                label = { if (it == 0) "1 FRAME" else "$it%" },
+                selected = sequence.lapseBlur,
+                onSelect = { blur -> viewModel.updateSequenceOptions { it.copy(lapseBlur = blur) } },
+            )
 
             Text(
                 text = "Shooting aids",
@@ -282,12 +299,12 @@ fun SettingsSheet(state: CameraUiState, viewModel: CameraViewModel, onClose: () 
                 selected = aids.timer,
                 onSelect = { timer -> viewModel.updateAids { it.copy(timer = timer) } },
             )
-            ToggleRow(
+            ChoiceRow(
                 name = "VOLUME KEYS",
-                note = "Either volume key releases the shutter, without moving the phone",
-                enabled = aids.volumeShutter,
-                available = true,
-                onChange = { on -> viewModel.updateAids { it.copy(volumeShutter = on) } },
+                options = VolumeKeys.entries,
+                label = { it.label },
+                selected = aids.volumeKeys,
+                onSelect = viewModel::setVolumeKeys,
             )
 
             Text(

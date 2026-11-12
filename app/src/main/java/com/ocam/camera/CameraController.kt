@@ -1167,9 +1167,11 @@ class CameraController(context: Context, private val listener: Listener) {
             exposureNs = capabilities.exposureTimeRange?.clamp(current.exposureTimeNs)
                 ?: current.exposureTimeNs,
             targetNs = if (mode == SequenceMode.LONG) options.longSeconds * 1_000_000_000L else null,
-            video = options.buildUpVideo,
+            video = options.buildUpVideo || mode.timelapse,
             sensorOrientation = sensorOrientation,
             mirrored = facing == CameraCharacteristics.LENS_FACING_FRONT,
+            lapseIntervalNs = options.lapseSeconds * 1_000_000_000L,
+            lapseBlurNs = options.lapseSeconds * 1_000_000_000L * options.lapseBlur / 100,
         )
         val run = try {
             SequenceRun(

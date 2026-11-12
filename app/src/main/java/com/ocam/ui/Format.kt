@@ -29,14 +29,3 @@ fun formatAperture(aperture: Float?): String? =
     aperture?.let { String.format(Locale.US, "f/%.1f", it) }
 
 fun formatKelvin(kelvin: Int): String = "${kelvin}K"
-
-/** Sliders for ISO and shutter feel right on a log scale: equal travel per stop. */
-fun toLogProgress(value: Float, min: Float, max: Float): Float {
-    if (min <= 0f || max <= min) return 0f
-    return ((ln(value.coerceIn(min, max)) - ln(min)) / (ln(max) - ln(min))).coerceIn(0f, 1f)
-}
-
-fun fromLogProgress(progress: Float, min: Float, max: Float): Float {
-    if (min <= 0f || max <= min) return min
-    return exp(ln(min) + progress.coerceIn(0f, 1f) * (ln(max) - ln(min)))
-}

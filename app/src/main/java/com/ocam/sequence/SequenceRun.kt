@@ -21,6 +21,10 @@ private const val TAG = "SequenceRun"
 private const val PICTURE_INTERVAL_MS = 250L
 private const val PICTURE_LONG_SIDE = 640
 
+/** A timelapse writes one frame per interval, so it can afford to wait for the encoder. */
+private const val LAPSE_VIDEO_WAIT_US = 250_000L
+private const val LAPSE_FRAME_RATE = 30.0
+
 /** Matches the quality the camera's own encoder is asked for. */
 internal const val MERGED_JPEG_QUALITY = 97
 
@@ -51,6 +55,9 @@ class SequencePlan(
     val video: Boolean,
     val sensorOrientation: Int,
     val mirrored: Boolean,
+    /** For a timelapse: how long from one picture to the next, and how much of that gathers light. */
+    val lapseIntervalNs: Long = 0L,
+    val lapseBlurNs: Long = 0L,
 )
 
 /**
@@ -83,20 +90,30 @@ class SequenceRun(
     private var lastPictureMs = 0L
     private var picture: Bitmap? = null
 
+    private val clock = if (plan.mode.timelapse) LapseClock(plan.lapseIntervalNs, plan.lapseBlurNs) else null
+    /** Pictures of the timelapse written so far, and whether one is being gathered. */
+    private var lapseFrames = 0
+    private var gathering = false
+    private var firstTimestamp = 0L
+
     /** @return true when the run has gathered all it was asked to. */
     fun offer(image: Image): Boolean {
         if (paused) {
             // The light stops counting, and so does the time: the next frame starts afresh.
             lastTimestamp = 0L
+            if (clock != null) {
+                clock.restart()
+                gathering = false
+            }
             return false
         }
+        if (clock != null) {
+            offerLapse(image, clock)
+            // Without its video a timelapse has nothing left to write, so it ends here.
+            return videoTried && video == null
+        }
 
-        val planes = image.planes
-        readLuma(planes[0].buffer, planes[0].rowStride, width, height, luma)
-        readChroma(
-            planes[2].buffer, planes[1].buffer, planes[1].pixelStride, planes[1].rowStride,
-            width, height, scratchV, scratchU, chroma,
-        )
+        read(image)
         merger.add(luma, chroma)
 
         val timestamp = image.timestamp
@@ -113,8 +130,57 @@ class SequenceRun(
         return plan.targetNs?.let { exposedNs >= it } ?: false
     }
 
+    /**
+     * Every frame passes through, but only those in the first part of each interval are kept: the
+     * camera runs at its own pace, and the clock picks out what belongs to each picture.
+     */
+    private fun offerLapse(image: Image, clock: LapseClock) {
+        val timestamp = image.timestamp
+        if (firstTimestamp == 0L) firstTimestamp = timestamp
+        exposedNs = timestamp - firstTimestamp + plan.exposureNs
+        val step = clock.frame(timestamp)
+        if (step.emit) emitLapse()
+        if (step.reset) {
+            merger.reset()
+            gathering = false
+        }
+        if (step.add) {
+            read(image)
+            merger.add(luma, chroma)
+            gathering = true
+        }
+        val now = SystemClock.uptimeMillis()
+        if (now - lastPictureMs >= PICTURE_INTERVAL_MS) {
+            lastPictureMs = now
+            publish()
+        }
+    }
+
+    /** The picture gathered for this interval becomes the next frame of the video. */
+    private fun emitLapse() {
+        if (!gathering) return
+        gathering = false
+        // A frame the encoder had no room for is not in the video, so it is not counted.
+        if (addToVideo(LAPSE_VIDEO_WAIT_US)) lapseFrames++
+        picture = makePicture()
+        publish()
+    }
+
+    private fun read(image: Image) {
+        val planes = image.planes
+        readLuma(planes[0].buffer, planes[0].rowStride, width, height, luma)
+        readChroma(
+            planes[2].buffer, planes[1].buffer, planes[1].pixelStride, planes[1].rowStride,
+            width, height, scratchV, scratchU, chroma,
+        )
+    }
+
     /** Write what has been built. What was gathered is kept, even if the run was cut short. */
     fun finish() {
+        if (clock != null) {
+            finishLapse()
+            return
+        }
         if (merger.frames == 0) {
             video?.abandon()
             onProblem("No frames arrived, so there is nothing to save")
@@ -139,6 +205,24 @@ class SequenceRun(
         }
     }
 
+    /** A timelapse is its video. A picture half gathered still goes in: it was asked for. */
+    private fun finishLapse() {
+        // The video stopped and said so; what it held went with it.
+        if (videoTried && video == null) return
+        emitLapse()
+        if (lapseFrames == 0) {
+            video?.abandon()
+            onProblem("No picture of the timelapse was finished")
+            return
+        }
+        try {
+            video?.finish()?.let(onSaved) ?: onProblem("The timelapse video could not be written")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Cannot finish the timelapse", t)
+            onProblem("The timelapse video could not be finished")
+        }
+    }
+
     private fun encode(): ByteArray {
         val pixels = ByteArray(width * height * 3 / 2)
         merger.writeNv21(pixels)
@@ -150,18 +234,30 @@ class SequenceRun(
         if (!plan.video || !plan.mode.buildsUp) return
         if (lastVideoNs >= 0 && exposedNs - lastVideoNs < plan.mode.videoStepNs) return
         lastVideoNs = exposedNs
-        try {
+        addToVideo()
+    }
+
+    /** @return whether the frame went into the video. */
+    private fun addToVideo(waitUs: Long? = null): Boolean {
+        return try {
             if (!videoTried) {
                 videoTried = true
                 video = VideoWriter(context, plan.baseName, width, height, plan.orientation)
             }
-            video?.add(merger)
+            video?.let { if (waitUs != null) it.add(merger, waitUs) else it.add(merger) } ?: false
         } catch (t: Throwable) {
             // The picture is what was asked for; the video is not worth losing it over.
             Log.e(TAG, "Cannot write the build-up video", t)
             runCatching { video?.abandon() }
             video = null
-            onProblem("The build-up video stopped; the picture is still being built")
+            onProblem(
+                if (clock != null) {
+                    "The timelapse video stopped, so the timelapse has ended"
+                } else {
+                    "The build-up video stopped; the picture is still being built"
+                }
+            )
+            false
         }
     }
 
@@ -183,6 +279,14 @@ class SequenceRun(
                 picture = picture,
                 sensorOrientation = plan.sensorOrientation,
                 mirrored = plan.mirrored,
+                note = if (clock != null) {
+                    String.format(
+                        Locale.US, "%d frames · %.1f s of video",
+                        lapseFrames, lapseFrames / LAPSE_FRAME_RATE,
+                    )
+                } else {
+                    null
+                },
             )
         )
     }

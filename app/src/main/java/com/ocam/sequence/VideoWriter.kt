@@ -59,9 +59,14 @@ class VideoWriter(
         }
     }
 
-    fun add(merger: FrameMerger) {
-        val index = codec.dequeueInputBuffer(INPUT_WAIT_US)
-        if (index >= 0) {
+    /**
+     * @param waitUs how long a frame may wait for room before it is left out.
+     * @return whether the frame went in.
+     */
+    fun add(merger: FrameMerger, waitUs: Long = INPUT_WAIT_US): Boolean {
+        val index = codec.dequeueInputBuffer(waitUs)
+        val taken = index >= 0
+        if (taken) {
             merger.writeScaledNv21(factor, width, height, pixels)
             val image = codec.getInputImage(index)
                 ?: throw IllegalStateException("The encoder gave no image to write into")
@@ -90,6 +95,7 @@ class VideoWriter(
             written++
         }
         drain(ending = false)
+        return taken
     }
 
     /** @return the name the video was saved under, or null if there was nothing in it. */

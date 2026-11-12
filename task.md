@@ -51,10 +51,35 @@
   exposure is fixed for a sweep, but a camera's own tone curve may still vary).
 - A film simulation on a very large panorama may not fit in memory, in which case it is saved ungraded.
 
+## Outside the roadmap: the cinema monitor screen (A6)
+
+Built, unit tests pass, not yet tested on a phone. Values across the top of the picture (lens, shutter,
+iris, ISO, white balance, focus), each opening a strip of presets; the mode and a running timecode in
+the middle; histogram and meter in the bottom corners; a tool row or column round a red shutter;
+every mode one tap away in a tab bar. Upright and on its side; Settings is the last tab on its side
+and a gear beside the timecode upright, where eight tabs need the whole row.
+
+- The volume keys: up records (starts and stops the mode's run), down takes a photo. A photo cannot be
+  taken while a run's mode is chosen, so each key first moves to its own kind of mode and the next
+  press shoots. Settings also offer SHUTTER (either key) and OFF.
+- Test on a phone: the layout on a tall and a short screen, with a cutout, in both landscape turns;
+  that the run label clears the values; that the preset strips scroll to the chosen value; how
+  long a mode change to and from Photo takes, which is what the photo and record keys wait on.
+- Lost from the old screen: the live readout of what the camera actually did (only the settings are
+  shown now), and the lens details and film simulation name under it. The diagnostics report is a
+  long press on the timecode.
+- Not built: the volume keys' place on screen in landscape, where the rocker is on the top edge one
+  way round and the bottom the other.
+
 ## Outside the roadmap: timelapse with motion blur
 
-Not built. A new mode, LAPSE: one picture every interval, written as a video at the end. Each picture
-is a LONG exposure in its own right, so it carries the blur a real long shutter would give.
+Built in part, unit tested, not yet tested on a phone: the mode LAPSE, with an interval (1 to 60 s)
+and a blur (one frame, or 25, 50 or 100% of the interval) in Settings. Each picture averages the frames
+of its blur, at the ISO and shutter set, and the pictures are written as a 30 fps MP4. Not built yet:
+choosing the way to gather by the meter, below, and the smooth change between them.
+
+One picture every interval, written as a video at the end. Each picture is a LONG exposure in its own
+right, so it carries the blur a real long shutter would give.
 
 - Blur target: half of each interval (2 s interval, 1 s of light), the timelapse equivalent of a 180°
   shutter. Interval and blur length are settings; the interval is a good use for the volume keys.

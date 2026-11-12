@@ -21,6 +21,7 @@ import com.ocam.camera.CaptureSettings
 import com.ocam.camera.Lens
 import com.ocam.camera.LensCapabilities
 import com.ocam.camera.ShootingAids
+import com.ocam.camera.VolumeKeys
 import com.ocam.camera.Subject
 import com.ocam.lut.LutFile
 import com.ocam.lut.LutPipeline
@@ -610,15 +611,53 @@ class CameraViewModel(application: Application) : AndroidViewModel(application),
         controller.startSequence(state.sequenceOptions)
     }
 
-    /** Step to the next thing the shutter can do. */
-    fun cycleSequenceMode() {
+    /** Choose what the shutter does. Not while it is doing something. */
+    fun selectSequenceMode(mode: SequenceMode) {
         val state = _state.value
         if (state.busy || state.sequence != null || state.countdown != null) return
-        val modes = SequenceMode.entries
-        val next = modes[(modes.indexOf(state.sequenceMode) + 1) % modes.size]
-        _state.update { it.copy(sequenceMode = next) }
-        controller.setSequenceMode(next)
-        onStatus(next.hint)
+        if (mode == state.sequenceMode) return
+        if (mode != SequenceMode.OFF) lastRunMode = mode
+        _state.update { it.copy(sequenceMode = mode) }
+        controller.setSequenceMode(mode)
+        onStatus(mode.hint)
+    }
+
+    fun setVolumeKeys(target: VolumeKeys) = updateAids { it.copy(volumeKeys = target) }
+
+    /** The mode the record key goes back to from Photo. */
+    private var lastRunMode = SequenceMode.LAPSE
+
+    /**
+     * One press of a volume key. Set to record and photo, up starts and stops the run and down takes
+     * a photo. A photo cannot be taken while a run's mode is chosen - its session has no still stream -
+     * so each key first moves to its own kind of mode and the next press shoots.
+     */
+    fun volumeKey(up: Boolean) {
+        val state = _state.value
+        when (state.aids.volumeKeys) {
+            VolumeKeys.OFF -> Unit
+            VolumeKeys.SHUTTER -> shutter()
+            VolumeKeys.SPLIT -> {
+                val photo = state.sequenceMode == SequenceMode.OFF
+                when {
+                    // Whatever is open, either key means back to shooting first.
+                    state.reviewOpen -> closeReview()
+                    up && !photo -> shutter()
+                    up -> selectSequenceMode(lastRunMode)
+                    state.sequence != null -> onStatus("Recording: the record key stops it")
+                    photo -> shutter()
+                    else -> selectSequenceMode(SequenceMode.OFF)
+                }
+            }
+        }
+    }
+
+    /** A temperature of its own, which only a lens that takes gains can do. */
+    fun setKelvin(kelvin: Int) {
+        if (!_state.value.capabilities.supportsManualWhiteBalance) return
+        updateSettings {
+            it.copy(whiteBalance = WhiteBalance.CUSTOM, kelvin = kelvin.coerceIn(MIN_KELVIN, MAX_KELVIN))
+        }
     }
 
     /** Hold the run while someone walks through the frame, or carry on. */

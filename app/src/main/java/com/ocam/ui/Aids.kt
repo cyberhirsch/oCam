@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ocam.camera.CropFrame
@@ -252,7 +253,13 @@ fun CountdownOverlay(seconds: Int, modifier: Modifier = Modifier) {
  * shows through it, so whoever is walking through can see where they are against the light so far.
  */
 @Composable
-fun SequenceOverlay(progress: SequenceProgress, onHold: () -> Unit, modifier: Modifier = Modifier) {
+fun SequenceOverlay(
+    progress: SequenceProgress,
+    onHold: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** How far down the label sits, to clear whatever is drawn over the top of the frame. */
+    labelTop: Dp = 8.dp,
+) {
     val view = LocalView.current
     val paint = remember { Paint(Paint.FILTER_BITMAP_FLAG) }
     Box(modifier = modifier) {
@@ -287,7 +294,7 @@ fun SequenceOverlay(progress: SequenceProgress, onHold: () -> Unit, modifier: Mo
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 8.dp)
+                .padding(top = labelTop)
                 .background(Color(0x99000000), RoundedCornerShape(4.dp))
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),

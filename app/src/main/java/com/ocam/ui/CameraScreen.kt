@@ -14,26 +14,25 @@ import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -51,22 +50,18 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocam.CameraUiState
 import com.ocam.CameraViewModel
-import com.ocam.camera.WhiteBalance
 import com.ocam.qr.QrReader
-import com.ocam.sequence.SequenceMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -86,6 +81,10 @@ private const val QR_SAMPLE_LONG_SIDE = 1280
 
 /** How far the magnifier enlarges the frame. */
 private const val MAGNIFICATION = 4f
+
+/** How tall the values over the top of the picture are, below the status bar. */
+private val BAR_UPRIGHT = 112.dp
+private val BAR_ON_ITS_SIDE = 78.dp
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
@@ -156,50 +155,69 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
         }
     }
 
-    // The window is edge to edge and the preview is not inset: padding the whole screen for the
-    // status and navigation bars took that strip out of the picture, which on its side is a black
-    // band above and below the frame. Only the controls and the readout keep clear of the bars.
+    // One value's presets at a time, closed by tapping the value again or the picture. A run
+    // closes it too: nothing should cover the picture being built.
+    var open by remember { mutableStateOf<ValueKind?>(null) }
+    val running = state.sequence != null
+    LaunchedEffect(running) { if (running) open = null }
+    val pick: (ValueKind) -> Unit = { open = if (open == it) null else it }
+    val review: @Composable () -> Unit = { ReviewButton(state, viewModel) }
+
+    // The window is edge to edge and the picture runs under the values, as on a monitor. Upright
+    // the tools and modes are rows under the frame; on its side they are columns beside it, in the
+    // same order, so nothing has to be learned twice.
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Upright the controls sit under the frame; on its side they sit beside it. Same parts,
-        // same order, so nothing has to be learned twice.
         val landscape = maxWidth > maxHeight
+        val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+        val barHeight = statusBar + if (landscape) BAR_ON_ITS_SIDE else BAR_UPRIGHT
         if (landscape) {
-            // On its side the frame is limited by height, so a strip of readout above it costs
-            // picture. The readout goes onto the image instead and the frame takes the full height.
-            // What a full-height frame needs is fixed by its own proportions; the controls get
-            // what is left. A panel of fixed width instead pushes the frame down to whatever
-            // fits beside it, which is where the black bands above and below came from.
-            val aspect = (state.previewWidth.toFloat() / state.previewHeight).coerceIn(0.2f, 5f)
-            val panel = (maxWidth - maxHeight * aspect).coerceIn(200.dp, 320.dp)
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    PreviewArea(state, viewModel, frame, landscape, overlayInfo = true) {
+                    PreviewArea(state, viewModel, frame, landscape, barHeight, { open = null }) {
                         textureView = it
                     }
+                    Column(modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().displayCutoutPadding()) {
+                        ValueBar(state, viewModel, open, pick, wide = true)
+                        open?.let { PresetStrip(state, viewModel, it) }
+                    }
+                    Scopes(
+                        state, frame,
+                        Modifier.align(Alignment.BottomCenter).navigationBarsPadding().displayCutoutPadding().padding(10.dp),
+                    )
                 }
-                Box(modifier = Modifier.width(panel).fillMaxHeight().safeDrawingPadding()) {
-                    LandscapeControls(state, viewModel, frame)
-                }
+                ToolStrip(
+                    state, viewModel, vertical = true, review = review,
+                    modifier = Modifier.fillMaxHeight().background(ToolGround).safeDrawingPadding().width(80.dp),
+                )
+                ModeBar(
+                    state, viewModel, vertical = true,
+                    modifier = Modifier.fillMaxHeight().background(ModeGround).safeDrawingPadding().width(92.dp),
+                )
             }
         } else {
-            // Upright the frame is limited by width, so the strip above it costs nothing and
-            // stays where it is legible: on black rather than over the picture.
             Column(modifier = Modifier.fillMaxSize()) {
-                TopStrip(
-                    state = state,
-                    viewModel = viewModel,
-                    modifier = Modifier.statusBarsPadding().displayCutoutPadding(),
-                )
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    PreviewArea(state, viewModel, frame, landscape) { textureView = it }
+                    PreviewArea(state, viewModel, frame, landscape, barHeight, { open = null }) {
+                        textureView = it
+                    }
+                    Column(modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().displayCutoutPadding()) {
+                        ValueBar(state, viewModel, open, pick, wide = false)
+                        open?.let { PresetStrip(state, viewModel, it) }
+                    }
+                    Scopes(state, frame, Modifier.align(Alignment.BottomCenter).padding(10.dp))
                 }
-                Box(modifier = Modifier.navigationBarsPadding()) {
-                    Controls(state, viewModel, frame)
-                }
+                ToolStrip(
+                    state, viewModel, vertical = false, review = review,
+                    modifier = Modifier.fillMaxWidth().height(96.dp),
+                )
+                ModeBar(
+                    state, viewModel, vertical = false, settings = false,
+                    modifier = Modifier.fillMaxWidth().background(ModeGround).navigationBarsPadding(),
+                )
             }
         }
     }
@@ -225,165 +243,40 @@ fun CameraScreen(viewModel: CameraViewModel, modifier: Modifier = Modifier) {
     }
 }
 
-/**
- * On its side the sliders stand up and the shutter keeps the middle of the outer edge - the same
- * place under the same thumb as the bottom centre when the phone is upright.
- */
+/** The histogram in the bottom left corner of the picture, the meter in the bottom right. */
 @Composable
-private fun LandscapeControls(
-    state: CameraUiState,
-    viewModel: CameraViewModel,
-    frame: FrameStats,
-) {
-    val caps = state.capabilities
-
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        // Everything except the sliders themselves has a fixed height - the button on top, the
-        // gaps, the name and value at the foot, the lenses and the row of buttons. A fixed slider
-        // length on top of that is taller than a short screen, and what falls off the bottom is
-        // the row with SET in it. The sliders take what is left instead.
-        val sliderHeight = (maxHeight - 180.dp).coerceIn(56.dp, 170.dp)
-
-        // The shutter keeps its strip; the parameters take the rest.
-        val strip = 96.dp
-
-        Row(modifier = Modifier.fillMaxHeight()) {
-            Column(
-                modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 6.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    VerticalControl(
-                        label = "ISO",
-                        value = isoText(state),
-                        progress = isoProgress(state),
-                        available = caps.supportsManualIso,
-                        sliderHeight = sliderHeight,
-                        onProgress = { progress ->
-                            caps.isoRange?.let { range ->
-                                viewModel.setIso(
-                                    fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
-                                        .roundToInt().coerceIn(range.lower, range.upper)
-                                )
-                            }
-                        },
-                    )
-                    VerticalControl(
-                        label = "SEC",
-                        value = shutterText(state),
-                        progress = shutterProgress(state),
-                        available = caps.supportsManualShutter,
-                        sliderHeight = sliderHeight,
-                        onProgress = { progress ->
-                            caps.exposureTimeRange?.let { range ->
-                                viewModel.setExposureTime(
-                                    fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
-                                        .toLong().coerceIn(range.lower, range.upper)
-                                )
-                            }
-                        },
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.padding(top = 14.dp).horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    state.visibleLenses.forEach { lens ->
-                        val risky = lens.warning != null || lens.id in state.troubled
-                        Pill(
-                            text = state.lensLabel(lens),
-                            subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
-                            selected = lens.id == state.selectedLensId,
-                            onClick = { viewModel.selectLens(lens.id) },
-                        )
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.padding(top = 10.dp).horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    FormatButton(state, viewModel)
-                    SequenceButton(state, viewModel)
-                    FlatButton(
-                        label = "SET",
-                        active = state.settingsOpen,
-                        onClick = viewModel::openSettings,
-                    )
-                }
-            }
-
-            Box(modifier = Modifier.width(strip).fillMaxHeight()) {
-                ReviewButton(
-                    state = state,
-                    viewModel = viewModel,
-                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp),
-                )
-                ShutterButton(
-                    busy = state.busy || state.countdown != null,
-                    enabled = state.selectedLensId != null,
-                    onClick = viewModel::shutter,
-                    running = state.sequence != null,
-                    modifier = Modifier.align(Alignment.Center),
-                )
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 20.dp)
-                        .fillMaxWidth(),
-                ) {
-                    if (state.aids.meter) {
-                        MeterScale(frame.exposureOffset, modifier = Modifier.padding(bottom = 3.dp))
-                    }
-                    Histogram(stats = frame, modifier = Modifier.fillMaxWidth())
-                }
-            }
+private fun Scopes(state: CameraUiState, frame: FrameStats, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        ScopePanel(content = { Histogram(stats = frame, modifier = Modifier.fillMaxWidth()) })
+        if (state.aids.meter) {
+            ScopePanel(content = { MeterScale(frame.exposureOffset, modifier = Modifier.fillMaxWidth()) })
         }
     }
 }
 
-/** The frame plus everything that lives along its edges. */
+/** The frame, and the messages that come up over its lower edge. */
 @Composable
 private fun PreviewArea(
     state: CameraUiState,
     viewModel: CameraViewModel,
     frame: FrameStats,
     landscape: Boolean,
-    overlayInfo: Boolean = false,
+    barHeight: Dp,
+    onTap: () -> Unit,
     onTextureView: (TextureView?) -> Unit,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
-        CameraPreview(state, viewModel, frame, landscape, onTextureView)
-
-        if (overlayInfo) {
-            TopStrip(
-                state = state,
-                viewModel = viewModel,
-                overlay = true,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .displayCutoutPadding(),
-            )
-        }
-
-        WhiteBalanceColumn(
-            state = state,
-            viewModel = viewModel,
-            modifier = Modifier.align(Alignment.CenterStart).padding(start = 6.dp),
-        )
-        FocusColumn(
-            state = state,
-            viewModel = viewModel,
-            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 6.dp),
-        )
+        CameraPreview(state, viewModel, frame, landscape, barHeight, onTap, onTextureView)
 
         val error = state.error
         val status = state.status
         Column(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+            // Clear of the histogram and the meter in the corners below.
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 80.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -410,6 +303,8 @@ private fun CameraPreview(
     viewModel: CameraViewModel,
     frame: FrameStats,
     landscape: Boolean,
+    barHeight: Dp,
+    onTap: () -> Unit,
     onTextureView: (TextureView?) -> Unit,
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -426,6 +321,8 @@ private fun CameraPreview(
             height = maxHeight
             width = maxHeight * aspect
         }
+        // Labels drawn over the frame keep below the values, wherever the frame's top edge falls.
+        val labelTop = (barHeight - (maxHeight - height) / 2).coerceAtLeast(8.dp)
 
         val center = state.magnifyCenter
         Box(modifier = Modifier.size(width, height).clipToBounds()) {
@@ -442,14 +339,14 @@ private fun CameraPreview(
                         transformOrigin = TransformOrigin(center.first, center.second)
                     },
             ) {
-                PreviewTexture(state, viewModel, onTextureView)
+                PreviewTexture(state, viewModel, onTap, onTextureView)
                 AnalysisOverlay(frame, modifier = Modifier.fillMaxSize())
                 state.subject?.let { SubjectOverlay(it, modifier = Modifier.fillMaxSize()) }
             }
 
             // The picture being built replaces the live frame, at the frame's own scale.
             state.sequence?.let {
-                SequenceOverlay(it, viewModel::toggleSequenceHold, Modifier.fillMaxSize())
+                SequenceOverlay(it, viewModel::toggleSequenceHold, Modifier.fillMaxSize(), labelTop)
             }
 
             // Composition aids stay at the frame's own scale: they describe the picture, not
@@ -465,7 +362,7 @@ private fun CameraPreview(
                     fontSize = 11.sp,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .padding(top = 8.dp)
+                        .padding(top = labelTop)
                         .background(Color(0x73000000), RoundedCornerShape(4.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                 )
@@ -480,6 +377,7 @@ private fun CameraPreview(
 private fun PreviewTexture(
     state: CameraUiState,
     viewModel: CameraViewModel,
+    onTap: () -> Unit,
     onTextureView: (TextureView?) -> Unit,
 ) {
     val context = LocalContext.current
@@ -488,6 +386,7 @@ private fun PreviewTexture(
             .fillMaxSize()
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
+                    onTap()
                     viewModel.tapPreview(
                         offset.x / size.width.toFloat(),
                         offset.y / size.height.toFloat(),
@@ -544,247 +443,6 @@ private fun PreviewTexture(
     )
 }
 
-@Composable
-private fun TopStrip(
-    state: CameraUiState,
-    viewModel: CameraViewModel,
-    overlay: Boolean = false,
-    modifier: Modifier = Modifier,
-) {
-    val lens = state.selectedLens
-    Row(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                // Over the picture the text needs its own ground; over black it does not.
-                .then(
-                    if (overlay) {
-                        Modifier
-                            .background(Color(0x73000000), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 3.dp)
-                    } else {
-                        Modifier
-                    }
-                )
-                // Hidden on purpose: a long press is out of the way in normal use, and the
-                // report is only ever needed when something has gone wrong.
-                .pointerInput(Unit) {
-                    detectTapGestures(onLongPress = { viewModel.openDiagnostics() })
-                },
-        ) {
-            Text(
-                text = liveReadout(state),
-                color = Color.White,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-            )
-            if (lens != null) {
-                Text(
-                    text = "${lens.facingLabel} ${state.lensLabel(lens)} · ${lens.detailLabel}" +
-                        (state.lutName?.let { " · ${it.removeSuffix(".cube")}" } ?: "") +
-                        if (lens.supportsRaw) " · raw" else "",
-                    color = Color(0x99FFFFFF),
-                    fontSize = 10.sp,
-                )
-            }
-        }
-    }
-}
-
-/** Focus lives on the right edge of the frame, running from infinity down to as close as it goes. */
-@Composable
-private fun FocusColumn(
-    state: CameraUiState,
-    viewModel: CameraViewModel,
-    modifier: Modifier = Modifier,
-) {
-    val caps = state.capabilities
-    Column(
-        modifier = modifier
-            .background(Color(0x40000000), RoundedCornerShape(4.dp))
-            .padding(vertical = 6.dp, horizontal = 3.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Text(text = focusText(state), color = Color(0xCCFFFFFF), fontSize = 10.sp)
-        VerticalThinSlider(
-            progress = focusProgress(state),
-            // While an eye is being followed the distance is not the user's to set; the slider
-            // keeps showing where the lens actually is.
-            enabled = caps.supportsManualFocus && !state.settings.eyeFocus,
-            onProgress = { progress ->
-                viewModel.setFocusDiopters(progress * caps.minFocusDistance)
-            },
-            modifier = Modifier.height(150.dp),
-        )
-        FlatButton(
-            label = "EYE",
-            active = state.settings.eyeFocus,
-            enabled = caps.supportsFaceFocus,
-            onClick = viewModel::toggleEyeFocus,
-        )
-        // The two ways of seeing where focus is: marks on what is sharp, and a closer look.
-        FlatButton(
-            label = "PEAK",
-            active = state.aids.peaking,
-            onClick = { viewModel.updateAids { it.copy(peaking = !it.peaking) } },
-        )
-        FlatButton(
-            label = "MAG",
-            active = state.magnify,
-            onClick = viewModel::toggleMagnify,
-        )
-        FlatButton(
-            label = "QR",
-            active = state.qrScan,
-            onClick = viewModel::toggleQrScan,
-        )
-    }
-}
-
-/** White balance lives on the left edge: three lights, and the frame itself for anything between. */
-@Composable
-private fun WhiteBalanceColumn(
-    state: CameraUiState,
-    viewModel: CameraViewModel,
-    modifier: Modifier = Modifier,
-) {
-    val settings = state.settings
-    val caps = state.capabilities
-    Column(
-        modifier = modifier
-            .background(Color(0x40000000), RoundedCornerShape(4.dp))
-            .padding(vertical = 6.dp, horizontal = 3.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Text(text = whiteBalanceText(state), color = Color(0xCCFFFFFF), fontSize = 10.sp)
-        // The camera's own lights, only the ones it says it has.
-        caps.whiteBalancePresets.forEach { preset ->
-            FlatButton(
-                label = preset.label,
-                active = settings.whiteBalance == preset,
-                onClick = { viewModel.setWhiteBalance(preset) },
-            )
-        }
-        FlatButton(
-            label = WhiteBalance.CUSTOM.label,
-            active = state.whiteBalanceAdjust || settings.whiteBalance == WhiteBalance.CUSTOM,
-            enabled = caps.supportsManualWhiteBalance,
-            onClick = viewModel::toggleWhiteBalanceAdjust,
-        )
-    }
-}
-
-private fun whiteBalanceText(state: CameraUiState): String {
-    val settings = state.settings
-    if (settings.whiteBalance != WhiteBalance.CUSTOM) return formatKelvin(settings.whiteBalance.kelvin)
-    return formatKelvin(settings.kelvin) +
-        if (abs(settings.tint) > 0.02f) " ${"%+.1f".format(settings.tint)}" else ""
-}
-
-/** Exposure stays under the frame; focus and white balance are along its sides. */
-@Composable
-private fun Controls(state: CameraUiState, viewModel: CameraViewModel, frame: FrameStats) {
-    val caps = state.capabilities
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.Black)
-            .padding(horizontal = 14.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        ControlRow(
-            label = "ISO",
-            value = isoText(state),
-            progress = isoProgress(state),
-            available = caps.supportsManualIso,
-            onProgress = { progress ->
-                caps.isoRange?.let { range ->
-                    viewModel.setIso(
-                        fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
-                            .roundToInt().coerceIn(range.lower, range.upper)
-                    )
-                }
-            },
-        )
-
-        ControlRow(
-            label = "SEC",
-            value = shutterText(state),
-            progress = shutterProgress(state),
-            available = caps.supportsManualShutter,
-            onProgress = { progress ->
-                caps.exposureTimeRange?.let { range ->
-                    viewModel.setExposureTime(
-                        fromLogProgress(progress, range.lower.toFloat(), range.upper.toFloat())
-                            .toLong().coerceIn(range.lower, range.upper)
-                    )
-                }
-            },
-        )
-
-        LensRow(state, viewModel)
-        ShutterRow(state, viewModel, frame)
-    }
-}
-
-/** A run writes a JPEG whatever this is set to, so while one is chosen it says that and rests. */
-@Composable
-private fun FormatButton(state: CameraUiState, viewModel: CameraViewModel) {
-    val single = state.sequenceMode == SequenceMode.OFF
-    FlatButton(
-        label = if (single) state.settings.format.label else "JPEG",
-        active = single && state.settings.format.writesRaw,
-        enabled = single,
-        onClick = viewModel::cycleFormat,
-    )
-}
-
-@Composable
-private fun SequenceButton(state: CameraUiState, viewModel: CameraViewModel) {
-    FlatButton(
-        label = state.sequenceMode.label,
-        active = state.sequenceMode != SequenceMode.OFF,
-        enabled = !state.busy && state.sequence == null && state.countdown == null,
-        onClick = viewModel::cycleSequenceMode,
-    )
-}
-
-@Composable
-private fun LensRow(state: CameraUiState, viewModel: CameraViewModel) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(
-            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            state.visibleLenses.forEach { lens ->
-                // "!" marks a lens that looks like a helper sensor or has misbehaved here before.
-                // It still opens, but only on a second tap.
-                val risky = lens.warning != null || lens.id in state.troubled
-                Pill(
-                    text = state.lensLabel(lens),
-                    subtitle = "${lens.facingLabel} ${lens.id}" + if (risky) " !" else "",
-                    selected = lens.id == state.selectedLensId,
-                    onClick = { viewModel.selectLens(lens.id) },
-                )
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            FormatButton(state, viewModel)
-            SequenceButton(state, viewModel)
-            FlatButton(label = "SET", active = state.settingsOpen, onClick = viewModel::openSettings)
-        }
-    }
-}
-
 /**
  * The last shot, which opens review. With nothing to show, the folder is still there: files from
  * before a reinstall are in it, and this app can no longer see them by itself.
@@ -807,32 +465,6 @@ private fun ReviewButton(state: CameraUiState, viewModel: CameraViewModel, modif
             onClick = { openPhotoFolder(context) },
             modifier = modifier,
         )
-    }
-}
-
-@Composable
-private fun ShutterRow(state: CameraUiState, viewModel: CameraViewModel, frame: FrameStats) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(modifier = Modifier.weight(1f)) {
-            ReviewButton(state, viewModel)
-        }
-        ShutterButton(
-            busy = state.busy || state.countdown != null,
-            enabled = state.selectedLensId != null,
-            onClick = viewModel::shutter,
-            running = state.sequence != null,
-        )
-        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            Column(modifier = Modifier.width(96.dp)) {
-                if (state.aids.meter) {
-                    MeterScale(frame.exposureOffset, modifier = Modifier.padding(bottom = 3.dp))
-                }
-                Histogram(stats = frame, modifier = Modifier.fillMaxWidth())
-            }
-        }
     }
 }
 
@@ -895,58 +527,4 @@ internal fun openPhotoFolder(context: Context) {
     }
     runCatching { context.startActivity(folder) }
         .recoverCatching { context.startActivity(gallery) }
-}
-
-// A slider shows the setting, not the reading. The two agree anyway - the camera is doing what
-// it was told - and the readout above the frame is where what it actually did is shown.
-
-private fun isoText(state: CameraUiState): String = state.settings.iso.toString()
-
-private fun isoProgress(state: CameraUiState): Float {
-    val range = state.capabilities.isoRange ?: return 0f
-    return toLogProgress(
-        state.settings.iso.toFloat(),
-        range.lower.toFloat(),
-        range.upper.toFloat(),
-    )
-}
-
-private fun shutterText(state: CameraUiState): String = formatShutter(state.settings.exposureTimeNs)
-
-private fun shutterProgress(state: CameraUiState): Float {
-    val range = state.capabilities.exposureTimeRange ?: return 0f
-    return toLogProgress(
-        state.settings.exposureTimeNs.toFloat(),
-        range.lower.toFloat(),
-        range.upper.toFloat(),
-    )
-}
-
-private fun focusText(state: CameraUiState): String = when {
-    state.settings.eyeFocus ->
-        state.liveFocusDiopters?.let(::formatFocus) ?: (if (state.subject != null) "eye" else "…")
-    !state.capabilities.supportsManualFocus -> "fixed"
-    else -> formatFocus(state.settings.focusDiopters)
-}
-
-private fun focusProgress(state: CameraUiState): Float {
-    val closest = state.capabilities.minFocusDistance
-    if (closest <= 0f) return 0f
-    val diopters = if (state.settings.eyeFocus) {
-        state.liveFocusDiopters ?: state.settings.focusDiopters
-    } else {
-        state.settings.focusDiopters
-    }
-    return (diopters / closest).coerceIn(0f, 1f)
-}
-
-private fun liveReadout(state: CameraUiState): String {
-    val parts = listOfNotNull(
-        state.liveIso?.let { "ISO $it" },
-        state.liveExposureNs?.let(::formatShutter),
-        formatAperture(state.liveAperture),
-        state.liveFocusDiopters?.let(::formatFocus),
-        whiteBalanceText(state),
-    )
-    return if (parts.isEmpty()) "…" else parts.joinToString(" · ")
 }

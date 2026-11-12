@@ -62,7 +62,11 @@ class AppSettings(context: Context) {
             grid = enumOr(prefs.getString(KEY_GRID, null), GridMode.OFF),
             frame = enumOr(prefs.getString(KEY_FRAME, null), CropFrame.NONE),
             timer = enumOr(prefs.getString(KEY_TIMER, null), SelfTimer.OFF),
-            volumeShutter = prefs.getBoolean(KEY_VOLUME_SHUTTER, true),
+            volumeKeys = enumOr(
+                prefs.getString(KEY_VOLUME_KEYS, null),
+                // Older builds only had on and off.
+                if (prefs.getBoolean(KEY_VOLUME_SHUTTER, true)) VolumeKeys.SPLIT else VolumeKeys.OFF,
+            ),
         )
         set(value) = prefs.edit()
             .putBoolean(KEY_PEAKING, value.peaking)
@@ -72,7 +76,7 @@ class AppSettings(context: Context) {
             .putString(KEY_GRID, value.grid.name)
             .putString(KEY_FRAME, value.frame.name)
             .putString(KEY_TIMER, value.timer.name)
-            .putBoolean(KEY_VOLUME_SHUTTER, value.volumeShutter)
+            .putString(KEY_VOLUME_KEYS, value.volumeKeys.name)
             .apply()
 
     /** How the modes that build a picture behave. Which mode is on is not kept: it surprises. */
@@ -86,6 +90,8 @@ class AppSettings(context: Context) {
             ultraHdr = prefs.getBoolean(KEY_ULTRA_HDR, SequenceOptions().ultraHdr),
             stackFrames = prefs.getInt(KEY_STACK_FRAMES, SequenceOptions().stackFrames),
             stackReach = prefs.getInt(KEY_STACK_REACH, SequenceOptions().stackReach),
+            lapseSeconds = prefs.getInt(KEY_LAPSE_SECONDS, SequenceOptions().lapseSeconds),
+            lapseBlur = prefs.getInt(KEY_LAPSE_BLUR, SequenceOptions().lapseBlur),
         )
         set(value) = prefs.edit()
             .putInt(KEY_LONG_SECONDS, value.longSeconds)
@@ -96,6 +102,8 @@ class AppSettings(context: Context) {
             .putBoolean(KEY_ULTRA_HDR, value.ultraHdr)
             .putInt(KEY_STACK_FRAMES, value.stackFrames)
             .putInt(KEY_STACK_REACH, value.stackReach)
+            .putInt(KEY_LAPSE_SECONDS, value.lapseSeconds)
+            .putInt(KEY_LAPSE_BLUR, value.lapseBlur)
             .apply()
 
     /** A stored name from an older build may no longer exist; the default stands in for it. */
@@ -146,7 +154,10 @@ class AppSettings(context: Context) {
         const val KEY_FRAME = "aid_frame"
         const val KEY_TIMER = "aid_timer"
         const val KEY_VOLUME_SHUTTER = "aid_volume_shutter"
+        const val KEY_VOLUME_KEYS = "aid_volume_keys"
         const val KEY_LONG_SECONDS = "sequence_long_seconds"
+        const val KEY_LAPSE_SECONDS = "lapse_seconds"
+        const val KEY_LAPSE_BLUR = "lapse_blur"
         const val KEY_BUILD_UP_VIDEO = "sequence_build_up_video"
         const val KEY_HDR_FRAMES = "hdr_frames"
         const val KEY_HDR_SPREAD = "hdr_spread"

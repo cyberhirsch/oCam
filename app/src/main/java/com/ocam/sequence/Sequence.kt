@@ -25,6 +25,8 @@ enum class SequenceMode(
     val stack: Boolean = false,
     /** Whether the frames are taken as the camera turns, to be laid side by side. */
     val panorama: Boolean = false,
+    /** Whether each picture is one frame of a video, taken at an interval. */
+    val timelapse: Boolean = false,
 ) {
     OFF("ONE", null, 0, false, 0L, "One photograph"),
     HDR(
@@ -55,6 +57,12 @@ enum class SequenceMode(
         "TRAIL", Blend.LIGHTEN, 6, true, 0L,
         "Star trails: on a tripod, with the shutter at 5 to 30 seconds. Shutter to start and to stop",
     ),
+    LAPSE(
+        "LAPSE", Blend.AVERAGE, 0, false, 0L,
+        "Timelapse: one picture every interval, each the average of the light over its blur, " +
+            "written as a 30 fps video. On a tripod. Shutter to start and to stop",
+        timelapse = true,
+    ),
 }
 
 enum class Blend { LIGHTEN, AVERAGE }
@@ -77,6 +85,10 @@ data class SequenceOptions(
     val stackFrames: Int = 9,
     /** How many times further away than the distance set a stack ends, or 0 for infinity. */
     val stackReach: Int = 2,
+    /** How long a timelapse waits from one picture to the next. */
+    val lapseSeconds: Int = 2,
+    /** How much of each interval a timelapse picture gathers light over, in percent; 0 is one frame. */
+    val lapseBlur: Int = 50,
 )
 
 /** The lengths a long exposure can be set to, in seconds. */
@@ -87,6 +99,51 @@ val HDR_SPREADS = listOf(1, 2, 3)
 
 val STACK_FRAMES = listOf(5, 9, 15, 25)
 val STACK_REACHES = listOf(2, 4, 8, 0)
+
+val LAPSE_SECONDS = listOf(1, 2, 5, 10, 30, 60)
+val LAPSE_BLURS = listOf(0, 25, 50, 100)
+
+/**
+ * When each frame of a timelapse counts. A picture starts every [intervalNs] and gathers the frames
+ * that arrive in the first [blurNs] of it; the frames in between are only shown. Times are the
+ * sensor's own, so a slow merge does not move the cadence.
+ */
+class LapseClock(private val intervalNs: Long, blurNs: Long) {
+    // At least one frame, and never more than the interval: a picture cannot outlast its turn.
+    private val blurNs = blurNs.coerceIn(1L, intervalNs)
+    private var start = -1L
+    private var open = false
+
+    /** What to do with a frame. [emit] comes first: the picture gathered so far is finished. */
+    class Step(val emit: Boolean, val reset: Boolean, val add: Boolean)
+
+    fun frame(timestamp: Long): Step {
+        if (start < 0) {
+            start = timestamp
+            open = true
+            return Step(emit = false, reset = true, add = true)
+        }
+        var emit = false
+        var reset = false
+        if (open && timestamp - start >= blurNs) {
+            open = false
+            emit = true
+        }
+        if (timestamp - start >= intervalNs) {
+            // Keep to the beat even when a frame comes late, rather than drifting later each time.
+            start += (timestamp - start) / intervalNs * intervalNs
+            open = true
+            reset = true
+        }
+        return Step(emit = emit, reset = reset, add = open)
+    }
+
+    /** Start again with the next frame, after a pause. */
+    fun restart() {
+        start = -1L
+        open = false
+    }
+}
 
 /**
  * How far from the exposure set each frame of a bracket is, in stops, in the order they are taken:

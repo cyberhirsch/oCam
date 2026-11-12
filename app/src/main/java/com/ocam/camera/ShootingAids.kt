@@ -16,8 +16,11 @@ data class ShootingAids(
     val grid: GridMode = GridMode.OFF,
     val frame: CropFrame = CropFrame.NONE,
     val timer: SelfTimer = SelfTimer.OFF,
-    /** Whether the volume keys release the shutter, which is the steadiest button on the phone. */
-    val volumeShutter: Boolean = true,
+    /**
+     * What the volume keys do: they are the steadiest buttons on the phone. By default one records
+     * and the other takes a photo, like the two buttons of a video camera.
+     */
+    val volumeKeys: VolumeKeys = VolumeKeys.SPLIT,
 )
 
 enum class GridMode(val label: String) {

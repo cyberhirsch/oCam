@@ -30,6 +30,11 @@ abstract class FrameMerger protected constructor(val width: Int, val height: Int
         frames++
     }
 
+    /** Start a new picture: the next frame replaces everything gathered so far. */
+    fun reset() {
+        frames = 0
+    }
+
     protected abstract fun first(y: ByteArray, vu: ByteArray)
 
     /** Merge rows [fromRow] until [toRow], which are always whole pairs of rows. */

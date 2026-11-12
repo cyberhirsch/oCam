@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.KeyEvent
+import com.ocam.camera.VolumeKeys
 import android.view.OrientationEventListener
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -94,24 +95,30 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * The volume keys as a shutter: a physical button can be pressed without moving the phone,
-     * which a tap on glass cannot. The key-up is swallowed too, or the volume panel still opens.
+     * The camera key is the shutter; the volume keys record and take a photo. A physical button can
+     * be pressed without moving the phone, which a tap on glass cannot. A key held down counts once.
+     * The key-up is swallowed too, or the volume panel still opens.
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (!isShutterKey(keyCode)) return super.onKeyDown(keyCode, event)
-        if (event.repeatCount == 0) viewModel.shutter()
+        if (!ownsKey(keyCode)) return super.onKeyDown(keyCode, event)
+        if (event.repeatCount > 0) return true
+        if (keyCode == KeyEvent.KEYCODE_CAMERA) {
+            viewModel.shutter()
+        } else {
+            viewModel.volumeKey(up = keyCode == KeyEvent.KEYCODE_VOLUME_UP)
+        }
         return true
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean =
-        if (isShutterKey(keyCode)) true else super.onKeyUp(keyCode, event)
+        if (ownsKey(keyCode)) true else super.onKeyUp(keyCode, event)
 
-    private fun isShutterKey(keyCode: Int): Boolean {
+    private fun ownsKey(keyCode: Int): Boolean {
         if (!hasCameraPermission) return false
         return when (keyCode) {
             KeyEvent.KEYCODE_CAMERA -> true
             KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN ->
-                viewModel.state.value.aids.volumeShutter
+                viewModel.state.value.aids.volumeKeys != VolumeKeys.OFF
             else -> false
         }
     }
