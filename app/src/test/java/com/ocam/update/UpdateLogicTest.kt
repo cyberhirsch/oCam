@@ -14,30 +14,31 @@ class UpdateLogicTest {
     fun `reads the build from a versioned asset`() {
         assertEquals(
             ReleaseBuild(37, "1.0.37+5b309bd"),
-            parseVersionedAsset("oCam-1.0.37-5b309bd-debug.apk"),
+            parseVersionedAsset("oCam-1.0.37-5b309bd.apk"),
         )
     }
 
     @Test
     fun `reads a build with no commit`() {
-        assertEquals(ReleaseBuild(12, "1.0.12"), parseVersionedAsset("oCam-1.0.12-debug.apk"))
+        assertEquals(ReleaseBuild(12, "1.0.12"), parseVersionedAsset("oCam-1.0.12.apk"))
     }
 
     @Test
     fun `the fixed name and strangers carry no build`() {
         assertNull(parseVersionedAsset(FIXED_APK_NAME))
         assertNull(parseVersionedAsset("app-debug.apk"))
-        assertNull(parseVersionedAsset("oCam-1.0-debug.apk"))
-        assertNull(parseVersionedAsset("oCam-1.0.37-5b309bd-debug.apk.sig"))
-        assertNull(parseVersionedAsset("oCam-1.0.99999999999999999999-debug.apk"))
+        assertNull(parseVersionedAsset("oCam.apk"))
+        assertNull(parseVersionedAsset("oCam-1.0.apk"))
+        assertNull(parseVersionedAsset("oCam-1.0.37-5b309bd.apk.sig"))
+        assertNull(parseVersionedAsset("oCam-1.0.99999999999999999999.apk"))
     }
 
     @Test
     fun `the newest build wins while two stand side by side`() {
         val names = listOf(
-            "oCam-1.0.9-aaaaaaa-debug.apk",
+            "oCam-1.0.9-aaaaaaa.apk",
             FIXED_APK_NAME,
-            "oCam-1.0.10-bbbbbbb-debug.apk",
+            "oCam-1.0.10-bbbbbbb.apk",
         )
         // 10 is newer than 9, which comparing the names as text would get wrong.
         assertEquals(10L, newestBuild(names)?.versionCode)

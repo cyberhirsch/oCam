@@ -7,7 +7,7 @@ import java.security.MessageDigest
 const val RELEASE_API_URL = "https://api.github.com/repos/cyberhirsch/oCam/releases/tags/debug-latest"
 
 /** The asset whose name never changes. The versioned one beside it says which build this is. */
-const val FIXED_APK_NAME = "oCam-debug.apk"
+const val FIXED_APK_NAME = "oCam.apk"
 
 /** The version code of a build with no CI run number, which never came from the release. */
 private const val LOCAL_BUILD_VERSION_CODE = 1L
@@ -32,10 +32,10 @@ sealed interface UpdateState {
     data class Failed(val message: String) : UpdateState
 }
 
-private val VERSIONED_ASSET = Regex("""^oCam-(\d+\.\d+\.(\d+))(?:-([0-9a-f]+))?-debug\.apk$""")
+private val VERSIONED_ASSET = Regex("""^oCam-(\d+\.\d+\.(\d+))(?:-([0-9a-f]+))?\.apk$""")
 
 /**
- * The build a versioned asset holds, from `oCam-1.0.37-5b309bd-debug.apk`. The third number is the
+ * The build a versioned asset holds, from `oCam-1.0.37-5b309bd.apk`. The third number is the
  * CI run, which is also the version code, and the name is taken from what the build itself stamped.
  */
 fun parseVersionedAsset(name: String): ReleaseBuild? {

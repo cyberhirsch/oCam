@@ -49,7 +49,7 @@ jobs:
           printf '%s' "$OCAM_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/ocam.keystore"
           echo "OCAM_KEYSTORE_PATH=$RUNNER_TEMP/ocam.keystore" >> "$GITHUB_ENV"
 
-      - name: Build debug APK
+      - name: Build the APK
         env:
           OCAM_KEYSTORE_PASSWORD: ${{ secrets.OCAM_KEYSTORE_PASSWORD }}
           OCAM_KEY_ALIAS: ${{ secrets.OCAM_KEY_ALIAS }}
@@ -68,12 +68,12 @@ jobs:
           [ -n "$version" ] || version="1.0.${BUILD_NUMBER}+${BUILD_COMMIT:0:7}"
           short_sha="${BUILD_COMMIT:0:7}"
           # '+' is legal in a file name but confuses enough URL handling to avoid it.
-          versioned="oCam-$(printf '%s' "$version" | tr '+' '-')-debug.apk"
+          versioned="oCam-$(printf '%s' "$version" | tr '+' '-').apk"
 
           cp "$built" "$versioned"
           # A second copy under a name that never changes, so the download link
           # and the QR code pointing at it keep working across builds.
-          cp "$built" oCam-debug.apk
+          cp "$built" oCam.apk
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
@@ -82,13 +82,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: oCam-${{ steps.apk.outputs.version }}-debug
+          name: oCam-${{ steps.apk.outputs.version }}
           path: ${{ steps.apk.outputs.versioned }}
           if-no-files-found: error
 
       # A release asset is a direct .apk a phone can install by tapping it; the
       # artifact above is a zip. Rolling tag - each build replaces the files.
-      - name: Publish APK to the rolling debug release
+      - name: Publish APK to the rolling release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.apk.outputs.version }}
@@ -100,19 +100,19 @@ jobs:
           That same version string is in the APK's manifest, in the name of the
           versioned file, and at the bottom of the app's settings sheet.
 
-          oCam-debug.apk always points at the newest build; the versioned file
+          oCam.apk always points at the newest build; the versioned file
           next to it is this build specifically."
 
           gh release view debug-latest >/dev/null 2>&1 || \
             gh release create debug-latest \
               --target "$GITHUB_SHA" \
               --prerelease \
-              --title "Debug build" \
+              --title "oCam $VERSION" \
               --notes "$notes"
 
           gh release edit debug-latest --title "oCam $VERSION" --notes "$notes"
 
-          gh release upload debug-latest "$VERSIONED" oCam-debug.apk --clobber
+          gh release upload debug-latest "$VERSIONED" oCam.apk --clobber
 
           # The rolling release holds exactly this build: the versioned file and
           # the fixed-name copy. Anything else is a leftover from an older build
@@ -120,7 +120,7 @@ jobs:
           gh release view debug-latest --json assets -q '.assets[].name' \
             | while read -r asset; do
                 case "$asset" in
-                  "$VERSIONED" | oCam-debug.apk) ;;
+                  "$VERSIONED" | oCam.apk) ;;
                   *) echo "Removing stale asset $asset"
                      gh release delete-asset debug-latest "$asset" --yes || true ;;
                 esac

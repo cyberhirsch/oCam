@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Serve the debug APK over the local network so a phone can install it without a
+# Serve the APK over the local network so a phone can install it without a
 # GitHub login. Run it on a machine on the same network as the phone; it prints a
 # QR code pointing at this host and then serves the file until you stop it.
 #
@@ -18,13 +18,13 @@ workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
 if [ -n "$APK" ]; then
-    cp "$APK" "$workdir/app-debug.apk"
+    cp "$APK" "$workdir/oCam.apk"
 elif [ -f "$LOCAL_BUILD" ]; then
     echo "Using locally built APK: $LOCAL_BUILD"
-    cp "$LOCAL_BUILD" "$workdir/app-debug.apk"
+    cp "$LOCAL_BUILD" "$workdir/oCam.apk"
 elif command -v gh >/dev/null 2>&1; then
     echo "Downloading $TAG from $REPO ..."
-    gh release download "$TAG" -R "$REPO" -p app-debug.apk -D "$workdir" --clobber
+    gh release download "$TAG" -R "$REPO" -p oCam.apk -D "$workdir" --clobber
 else
     echo "No APK found. Build one with ./gradlew assembleDebug, pass APK=/path/to.apk," >&2
     echo "or install the gh CLI so this script can fetch the release." >&2
@@ -37,7 +37,7 @@ ip="$(ip route get 1.1.1.1 2>/dev/null |
 [ -n "${ip:-}" ] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "${ip:-}" ] || ip="localhost"
 
-url="http://$ip:$PORT/app-debug.apk"
+url="http://$ip:$PORT/oCam.apk"
 
 echo
 echo "  $url"

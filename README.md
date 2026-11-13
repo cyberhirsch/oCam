@@ -246,7 +246,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 CI builds the APK on every push and attaches it to a rolling `debug-latest`
 prerelease, so the newest build is always at:
 
-https://github.com/cyberhirsch/oCam/releases/download/debug-latest/oCam-debug.apk
+https://github.com/cyberhirsch/oCam/releases/download/debug-latest/oCam.apk
 
 Open that on the phone and it downloads the APK directly - the repository is
 public, so no login is involved. Allow "install unknown apps" for the browser
